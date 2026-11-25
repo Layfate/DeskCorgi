@@ -1019,8 +1019,9 @@ fn draw_focus_mark(p: &mut Painter, pose: &Pose, h: &HeadXf) {
         return;
     }
     let pulse = 1.0 + 0.1 * (pose.time * 9.0).sin();
-    let size = 5.2 * h.scale * pulse * (0.6 + 0.4 * a);
-    let c = h.map_flat(pt(50.0, -50.0), 6.0);
+    let size = 6.8 * h.scale * pulse * (0.6 + 0.4 * a);
+    // On the head itself, just inside its top-right edge.
+    let c = h.map_flat(pt(41.0, -36.0), 6.0);
     let rot = h.tilt + 0.2;
     let arcs: Vec<Vec<Pt>> = [(1.0f32, 1.0f32), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)]
         .iter()
@@ -1035,10 +1036,10 @@ fn draw_focus_mark(p: &mut Painter, pose: &Pose, h: &HeadXf) {
         })
         .collect();
     for arc in &arcs {
-        p.stroke(&polyline(arc), WHITE.fade(0.9 * a), 3.6 * h.scale);
+        p.stroke(&polyline(arc), WHITE.fade(0.9 * a), 4.2 * h.scale);
     }
     for arc in &arcs {
-        p.stroke(&polyline(arc), rgb(0xE8, 0x3F, 0x4A).fade(a), 1.9 * h.scale);
+        p.stroke(&polyline(arc), rgb(0xE8, 0x3F, 0x4A).fade(a), 2.3 * h.scale);
     }
 }
 
