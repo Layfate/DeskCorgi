@@ -106,6 +106,8 @@ pub struct Pose {
     pub gaze: Pt,
     pub pupil: f32,
     pub sparkle: f32,
+    /// 0..1: the focused "in the zone" face while typing fast (slanted lids, 💢 mark).
+    pub focus: f32,
     pub mouth_open: f32,
     pub tongue: f32,
     pub blush: f32,
@@ -148,6 +150,7 @@ impl Pose {
             gaze: Pt::ZERO,
             pupil: 1.0,
             sparkle: 0.0,
+            focus: 0.0,
             mouth_open: 0.0,
             tongue: 0.0,
             blush: 0.35,
@@ -238,6 +241,7 @@ pub struct Pet {
     gaze: Spring2,
     pupil: Spring,
     sparkle: Spring,
+    focus: Spring,
     happy: Spring,
     sleepy: Spring,
     mouth: Spring,
@@ -319,6 +323,7 @@ impl Pet {
             gaze: Spring2::new(Pt::ZERO, 320.0, 30.0),
             pupil: Spring::new(1.0, 260.0, 20.0),
             sparkle: Spring::soft(0.0),
+            focus: Spring::soft(0.0),
             happy: Spring::new(0.0, 300.0, 26.0),
             sleepy: Spring::new(0.0, 60.0, 14.0),
             mouth: Spring::new(0.0, 300.0, 24.0),
@@ -763,11 +768,13 @@ impl Pet {
         self.pupil.target = match mood {
             Mood::Chase => 1.38,
             Mood::Zoomies => 1.2,
-            Mood::Excited => 1.12,
+            // Typing fast: concentrating, pupils a little tighter.
+            Mood::Excited => 0.9,
             Mood::Scruff => 0.92,
             _ => 1.0,
         };
-        self.sparkle.target = if matches!(mood, Mood::Chase | Mood::Excited | Mood::Zoomies) { 1.0 } else { 0.0 };
+        self.sparkle.target = if matches!(mood, Mood::Chase | Mood::Zoomies) { 1.0 } else { 0.0 };
+        self.focus.target = if mood == Mood::Excited { 1.0 } else { 0.0 };
         if mood == Mood::Idle && now >= self.next_blep {
             self.blep_until = now + 1.6;
             self.next_blep = now + self.rng.range(14.0, 30.0) as f64;
@@ -776,12 +783,13 @@ impl Pet {
             Mood::Zoomies => 1.0,
             Mood::Chase => 0.85,
             Mood::Pat => 0.75,
-            Mood::Excited => 0.5,
             Mood::Scruff => 0.4,
             _ => 0.0,
         };
         self.tongue.target = match mood {
-            Mood::Zoomies | Mood::Chase | Mood::Pat | Mood::Excited => 1.0,
+            Mood::Zoomies | Mood::Chase | Mood::Pat => 1.0,
+            // Concentration tongue: a little blep while typing hard.
+            Mood::Excited => 0.55,
             Mood::Idle if now < self.blep_until => 0.6,
             _ => 0.0,
         };
@@ -853,6 +861,7 @@ impl Pet {
             &mut self.fold,
             &mut self.pupil,
             &mut self.sparkle,
+            &mut self.focus,
             &mut self.happy,
             &mut self.sleepy,
             &mut self.mouth,
@@ -935,6 +944,7 @@ impl Pet {
         p.gaze = self.gaze.value();
         p.pupil = self.pupil.value;
         p.sparkle = self.sparkle.value.clamp(0.0, 1.0);
+        p.focus = self.focus.value.clamp(0.0, 1.0);
         p.mouth_open = self.mouth.value.clamp(0.0, 1.0);
         p.tongue = self.tongue.value.clamp(0.0, 1.0);
         p.blush = self.blush.value.clamp(0.0, 1.0);
@@ -1107,6 +1117,26 @@ mod tests {
                 assert!(p.paws[0].pos.x < p.paws[1].pos.x, "seed {seed}, frame {i}: arms crossed {:?} / {:?}", p.paws[0].pos, p.paws[1].pos);
             }
         }
+    }
+
+    /// Typing fast puts on the focused face (and takes off the sparkly one); it fades again
+    /// when typing stops.
+    #[test]
+    fn fast_typing_makes_the_dog_focus() {
+        let skin = corgi();
+        let mut pet = Pet::new(8);
+        for i in 0..150usize {
+            let k = key(1 + i % 3, 1 + (i * 5) % 9);
+            pet.handle(InputEvent::KeyDown(k));
+            step(&mut pet, &skin, 1.0 / 60.0, FrameInput::default());
+            pet.handle(InputEvent::KeyUp(k));
+            step(&mut pet, &skin, 1.0 / 60.0, FrameInput::default());
+        }
+        assert_eq!(pet.mood(), Mood::Excited);
+        assert!(pet.pose().focus > 0.8, "focus {}", pet.pose().focus);
+        assert!(pet.pose().sparkle < 0.2);
+        step(&mut pet, &skin, 6.0, FrameInput::default());
+        assert!(pet.pose().focus < 0.1, "focus stays after typing stopped: {}", pet.pose().focus);
     }
 
     #[test]

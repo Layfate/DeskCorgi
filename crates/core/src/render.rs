@@ -888,6 +888,7 @@ fn draw_head(p: &mut Painter, pose: &Pose, skin: &Skin, rig: &Rig, o: &RenderOpt
     }
 
     p.stroke(&silhouette, pal.outline, 2.5);
+    draw_focus_mark(p, pose, h);
 }
 
 fn draw_eyes(p: &mut Painter, pose: &Pose, skin: &Skin, h: &HeadXf, o: &RenderOptions) {
@@ -947,6 +948,20 @@ fn draw_eyes(p: &mut Painter, pose: &Pose, skin: &Skin, h: &HeadXf, o: &RenderOp
             let k = 0.17 * rx * pose.sparkle;
             p.fill(&affine_path(poly(&star_pts(c, k, 0.3)), f), WHITE);
         }
+        // Focused eyelid: a lid slanting down towards the nose, like a determined squint.
+        if pose.focus > 0.02 {
+            let k = pose.focus;
+            let inner = -s; // +x points towards the nose for the viewer-left eye
+            let lid_y = |x: f32| -ery * 1.04 + k * ery * (0.72 + 0.5 * (x * inner / rx));
+            let ring = ellipse_pts(Pt::ZERO, rx * 1.06, ery * 1.06, 48);
+            let cap = clip_above(&ring, &lid_y);
+            if cap.len() >= 3 {
+                p.fill(&affine_path(poly(&cap), f), pal.body);
+                let a = pt(-rx * 1.08, lid_y(-rx * 1.08));
+                let b = pt(rx * 1.08, lid_y(rx * 1.08));
+                p.stroke(&affine_path(polyline(&[a, b]), f), dark, (1.6 + 0.8 * k) * h.scale);
+            }
+        }
         // smug eyelid
         if sh.eye_lid > 0.01 {
             let lid_y = -ery + 2.0 * ery * sh.eye_lid;
@@ -964,6 +979,66 @@ fn draw_eyes(p: &mut Painter, pose: &Pose, skin: &Skin, h: &HeadXf, o: &RenderOp
                 p.stroke(&line, dark, 1.9 * h.scale);
             }
         }
+    }
+}
+
+/// The part of the closed polygon `pts` above the line `y = line(x)` (Sutherland–Hodgman
+/// against one half-plane).
+fn clip_above(pts: &[Pt], line: &dyn Fn(f32) -> f32) -> Vec<Pt> {
+    let inside = |q: Pt| q.y <= line(q.x);
+    let mut out = Vec::with_capacity(pts.len() + 2);
+    for i in 0..pts.len() {
+        let a = pts[i];
+        let b = pts[(i + 1) % pts.len()];
+        let (ia, ib) = (inside(a), inside(b));
+        if ia {
+            out.push(a);
+        }
+        if ia != ib {
+            // Bisect for the crossing; the line is straight, a few steps are plenty.
+            let (mut lo, mut hi) = (0.0f32, 1.0f32);
+            for _ in 0..12 {
+                let mid = (lo + hi) / 2.0;
+                if inside(a.lerp(b, mid)) == ia {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            out.push(a.lerp(b, (lo + hi) / 2.0));
+        }
+    }
+    out
+}
+
+/// The anime "💢" anger mark beside the head while the dog is focused: four little arcs
+/// bowing in towards a centre, red with a white rim, pulsing gently.
+fn draw_focus_mark(p: &mut Painter, pose: &Pose, h: &HeadXf) {
+    let a = smoothstep(0.3, 0.85, pose.focus);
+    if a <= 0.01 {
+        return;
+    }
+    let pulse = 1.0 + 0.1 * (pose.time * 9.0).sin();
+    let size = 5.2 * h.scale * pulse * (0.6 + 0.4 * a);
+    let c = h.map_flat(pt(50.0, -50.0), 6.0);
+    let rot = h.tilt + 0.2;
+    let arcs: Vec<Vec<Pt>> = [(1.0f32, 1.0f32), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)]
+        .iter()
+        .map(|&(sx, sy)| {
+            (0..=8)
+                .map(|i| {
+                    let t = i as f32 / 8.0;
+                    let q = quad(pt(sx * 0.32, sy), pt(sx * 0.3, sy * 0.3), pt(sx, sy * 0.32), t);
+                    c + (q * size).rotate(rot)
+                })
+                .collect()
+        })
+        .collect();
+    for arc in &arcs {
+        p.stroke(&polyline(arc), WHITE.fade(0.9 * a), 3.6 * h.scale);
+    }
+    for arc in &arcs {
+        p.stroke(&polyline(arc), rgb(0xE8, 0x3F, 0x4A).fade(a), 1.9 * h.scale);
     }
 }
 

@@ -63,7 +63,7 @@
 | :--- | :--- |
 | type | taps the matching keys, with each paw staying on its own side |
 | hold 3 or 4 keys | lifts a back paw (or both) onto the extra keys |
-| type fast | perks its ears, gets sparkly eyes and wags harder |
+| type fast | gets its focused face (narrowed eyes, a 💢 mark, concentration tongue), perks its ears and wags harder |
 | move the mouse | puts a paw on its own mouse and follows along |
 | move the cursor | turns its head and eyes to watch it |
 | shake the cursor fast | plays chase: huge eyes, open mouth, tail going wild |
