@@ -1,0 +1,15 @@
+[package]
+name = "deskcorgi-core"
+description = "Platform-independent heart of DeskCorgi: input model, animation rig, skins and the renderer."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tiny-skia = { version = "0.11.4", default-features = false, features = ["std", "simd"] }
+serde = { version = "1", features = ["derive"] }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+
+[dev-dependencies]
+tiny-skia = { version = "0.11.4", features = ["png-format"] }

@@ -1,0 +1,18 @@
+[package]
+name = "deskcorgi"
+description = "A tiny desktop dog that mirrors your keyboard and mouse."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "DeskCorgi"
+path = "src/main.rs"
+
+[dependencies]
+deskcorgi-core = { path = "../crates/core" }
+
+[target.'cfg(windows)'.dependencies]
+deskcorgi-windows = { path = "../crates/platform-windows" }

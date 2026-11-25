@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/platform-windows", "app"]
+default-members = ["app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+
+[profile.release]
+# Measured: with whole-program LTO, opt-level 3 gives both the smaller exe (~964 KB vs
+# ~1000 KB for "z"/"s") and the faster renderer (1.7 ms vs 2.3 ms per frame).
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Keep debug builds of the renderer usable.
+[profile.dev.package."*"]
+opt-level = 2

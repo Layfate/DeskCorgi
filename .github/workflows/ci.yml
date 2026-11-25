@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  windows-release:
+    name: Windows release build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      # About 1 MiB of code plus the embedded logo icon (~50 KB, all sizes up to 256 px).
+      - name: Check binary size (must stay under 1.25 MiB)
+        shell: pwsh
+        run: |
+          $size = (Get-Item target/release/DeskCorgi.exe).Length
+          Write-Host "DeskCorgi.exe is $size bytes"
+          if ($size -gt 1310720) { throw "DeskCorgi.exe grew past 1.25 MiB ($size bytes)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskCorgi-Windows-x64
+          path: target/release/DeskCorgi.exe

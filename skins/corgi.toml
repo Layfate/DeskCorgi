@@ -1,0 +1,42 @@
+# DeskCorgi skin. Every value is optional except format_version, name and palette.body.
+format_version = 1
+name = "Corgi"
+author = "DeskCorgi"
+
+[palette]
+body = "#E9933F"
+body_shade = "#D97C2C"
+belly = "#FFF8EE"
+legs = "#E9933F"
+paws = "#FFF8EE"
+pads = "#F29CA3"
+ear_outer = "#E38A36"
+ear_inner = "#F9C9B9"
+nose = "#2E1F1A"
+mouth = "#4A2B22"
+tongue = "#FF869E"
+tail = "#E9933F"
+tail_tip = "#FFF8EE"
+outline = "#5C341E"
+blush = "#FF8F8F"
+markings = "#B86222"
+
+[shape]
+body_width = 1.12  # 0.85 to 1.35
+leg_length = 0.6  # 0.5 to 1.2
+head_scale = 1.0  # 0.85 to 1.2
+muzzle_length = 1.0  # 0.6 to 1.4
+ear_size = 1.15  # 0.6 to 1.5
+ear_spread = 0.3  # -0.2 to 0.8
+ear_pointiness = 0.75  # 0.5 to 1.5
+eye_size = 1.12  # 0.7 to 1.4
+eye_lid = 0.0  # 0.0 to 0.5
+eye_slant = 0.0  # -0.3 to 0.3
+cheek_fluff = 0.35  # 0.0 to 1.5
+butt_fluff = 1.25  # 0.8 to 1.4
+tail_length = 0.7  # 0.3 to 1.4
+sock_length = 0.5  # 0.0 to 1.0
+tail_style = "stub"  # stub, curl or plume
+face = "blaze"  # none, blaze or urajiro
+chest = "ruff"  # none, ruff or bib
+brows = false
