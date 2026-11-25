@@ -131,12 +131,15 @@ impl Rig {
         self.body.map(j + pt(-side_sign(side) * 5.0, -28.0))
     }
 
-    /// Upper-arm and forearm length. Constant for a skin: slightly longer than the distance
-    /// from the shoulder to the paw's resting spot, so a resting leg has a soft bend.
+    /// Upper-arm and forearm length. Constant for a skin: 2% longer than the distance from
+    /// the shoulder to the paw's resting spot.
     pub fn arm_bones(&self) -> (f32, f32) {
         let shoulder = SEAT + Rig::shoulder_local(self.body_width, self.leg_length, 1);
         let d = (paw_rest(1) - shoulder).len();
-        (0.56 * d, 0.56 * d)
+        // Only slightly longer than the reach, so a resting leg has a soft bend but its elbow
+        // never bows out past the side of the body (which would put an S-curve in the
+        // silhouette).
+        (0.51 * d, 0.51 * d)
     }
 
     /// Hip joint of the back leg, right at the keyboard's top edge.

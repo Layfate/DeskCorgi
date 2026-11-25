@@ -865,7 +865,7 @@ fn draw_head(p: &mut Painter, pose: &Pose, skin: &Skin, rig: &Rig, o: &RenderOpt
     // Blush
     let blush_a = 0.16 + 0.42 * pose.blush;
     for s in [-1.0f32, 1.0] {
-        let pts = map_pts(&ellipse_pts(pt(s * 37.0, 16.0), 9.0, 5.4, 24), dome);
+        let pts = map_pts(&ellipse_pts(pt(s * 38.0, 16.0), 10.5, 6.2, 24), dome);
         p.fill_clipped(&poly(&pts), pal.blush.fade(blush_a), Clip::Head);
     }
 
@@ -1019,7 +1019,7 @@ fn draw_focus_mark(p: &mut Painter, pose: &Pose, h: &HeadXf) {
         return;
     }
     let pulse = 1.0 + 0.1 * (pose.time * 9.0).sin();
-    let size = 6.8 * h.scale * pulse * (0.6 + 0.4 * a);
+    let size = 7.6 * h.scale * pulse * (0.6 + 0.4 * a);
     // On the head itself, just inside its top-right edge.
     let c = h.map_flat(pt(41.0, -36.0), 6.0);
     let rot = h.tilt + 0.2;
@@ -1304,7 +1304,7 @@ impl Legs {
         // Organic front-leg profile: the outer side (towards the flank) carries the shoulder,
         // the inner side tapers into the body at the armpit so it never reaches the chest fur.
         let arm = Profile {
-            outer: [w * 0.84, w * 0.9, w * 0.86, w * 0.82, w * 0.8],
+            outer: [w * 0.7, w * 0.86, w * 0.86, w * 0.82, w * 0.8],
             inner: [w * 0.37, w * 0.7, w * 0.78, w * 0.78, w * 0.76],
             root: w * 0.62,
         };
@@ -1880,6 +1880,35 @@ mod tests {
                 }
                 for q in chest.iter().filter(|q| !rig.head_contains(**q)) {
                     assert!(!point_in_polygon(*q, &leg.outline), "{}: chest point {q:?} under leg {side}", skin.name);
+                }
+            }
+        }
+    }
+
+    /// At rest the front legs lie inside the body's outline, so the silhouette down each side
+    /// is the body's own smooth curve: no bulge where the elbow pokes out and no dip where the
+    /// hip shows again below it.
+    #[test]
+    fn resting_front_legs_keep_the_body_outline_smooth() {
+        fn dist_to_outline(p: Pt, poly: &[Pt]) -> f32 {
+            let mut best = f32::MAX;
+            for i in 0..poly.len() {
+                let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+                let ab = b - a;
+                let t = (((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / (ab.x * ab.x + ab.y * ab.y).max(1e-6)).clamp(0.0, 1.0);
+                best = best.min((p - (a + ab * t)).len());
+            }
+            best
+        }
+        for skin in BUILTINS.map(|(_, f)| f()) {
+            let pose = Pose::neutral();
+            let rig = Rig::new(&skin.shape, &pose);
+            let legs = Legs::new(&pose, &skin, &rig);
+            for side in 0..2 {
+                let leg = &legs.items[legs.front[side]];
+                for q in leg.outline.iter().filter(|q| !rig.head_contains(**q) && q.y < LEG_SPLIT_Y) {
+                    let outside = !point_in_polygon(*q, &legs.torso);
+                    assert!(!outside || dist_to_outline(*q, &legs.torso) < 1.5, "{}: leg {side} sticks out of the body at {q:?}", skin.name);
                 }
             }
         }
