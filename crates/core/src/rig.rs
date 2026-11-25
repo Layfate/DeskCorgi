@@ -82,6 +82,9 @@ pub struct Rig {
     leg_length: f32,
 }
 
+/// Length of a front leg from shoulder to paw (canvas units).
+pub const ARM_REACH: f32 = 132.0;
+
 /// Base head size; the skin's `head_scale` multiplies this. A big head reads as cute.
 pub const HEAD_BASE_SCALE: f32 = 1.1;
 
@@ -131,15 +134,18 @@ impl Rig {
         self.body.map(j + pt(-side_sign(side) * 5.0, -28.0))
     }
 
-    /// Upper-arm and forearm length. Constant for a skin: 2% longer than the distance from
-    /// the shoulder to the paw's resting spot.
-    pub fn arm_bones(&self) -> (f32, f32) {
+    /// The real length of a front leg, shoulder to paw. Long enough to reach the mouse and
+    /// the far keys; paws are never placed further away than this, so legs never stretch.
+    /// Closer targets are reached with a gentle bend (see `limb::soft_elbow`).
+    pub fn arm_reach(&self) -> f32 {
+        ARM_REACH
+    }
+
+    /// Shoulder-to-paw distance in the resting pose, the reference the sock length is
+    /// measured against (so socks keep the same size however far the leg reaches).
+    pub fn rest_arm_span(&self) -> f32 {
         let shoulder = SEAT + Rig::shoulder_local(self.body_width, self.leg_length, 1);
-        let d = (paw_rest(1) - shoulder).len();
-        // Only slightly longer than the reach, so a resting leg has a soft bend but its elbow
-        // never bows out past the side of the body (which would put an S-curve in the
-        // silhouette).
-        (0.51 * d, 0.51 * d)
+        (paw_rest(1) - shoulder).len()
     }
 
     /// Hip joint of the back leg, right at the keyboard's top edge.

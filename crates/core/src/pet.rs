@@ -685,6 +685,8 @@ impl Pet {
                     }
                 }
             };
+            // Never further than the leg is long: legs bend, they don't stretch.
+            let target = crate::limb::within_reach(rig.shoulder(side), target, rig.arm_reach() * 0.97);
             targets[side] = (target, press);
 
             let hind_key = if matches!(mood, Mood::Scruff | Mood::Zoomies | Mood::Sleep) { None } else { hind[side] };
@@ -820,12 +822,21 @@ impl Pet {
         }
         // Inverse kinematics: elbows and knees follow the paws. A stiff spring on top smooths
         // the rare moment where the bend flips sides, so limbs never snap.
-        let (upper, lower) = rig.arm_bones();
         let (thigh, shin) = rig.leg_bones();
         for side in 0..2 {
             let s = side_sign(side);
-            let prefer = if waving && side == WAVE_SIDE { pt(s * 0.6, 1.0) } else { crate::limb::front_bend(s) };
-            let elbow = crate::limb::solve_elbow(rig.shoulder(side), self.paw[side].value(), upper, lower, prefer);
+            let waving_paw = waving && side == WAVE_SIDE;
+            let prefer = if waving_paw { pt(s * 0.6, 1.0) } else { crate::limb::front_bend(s) };
+            // A raised paw (waving, zoomies) bends clearly at the elbow; a paw on the keys
+            // only softly.
+            let bend = match mood {
+                _ if waving_paw => 0.2,
+                Mood::Zoomies => 0.16,
+                Mood::Scruff => 0.04,
+                _ => crate::limb::natural_bend(rig.shoulder(side), self.paw[side].value()),
+            };
+            let paw = crate::limb::within_reach(rig.shoulder(side), self.paw[side].value(), rig.arm_reach());
+            let elbow = crate::limb::soft_elbow(rig.shoulder(side), paw, prefer, bend);
             let hip = rig.hip(side);
             let foot = hip.lerp(self.hind[side].value(), self.hind_up[side].value.clamp(0.0, 1.0));
             let knee = crate::limb::solve_elbow(hip, foot, thigh, shin, pt(s, 0.2));

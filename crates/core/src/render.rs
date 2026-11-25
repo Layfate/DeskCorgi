@@ -16,7 +16,7 @@ use crate::config::{EyeColor, KeyboardColors, KeyboardTheme};
 use crate::geom::{clamp01, lerp, pt, smoothstep, Affine, Pt};
 use crate::glyphs;
 use crate::keymap::{all_keys, key_kind, KeyId, KeyKind, KEY_COUNT};
-use crate::limb::{fillets, front_bend, point_in_polygon, skin_limb, solve_elbow, Fillet, LimbShape, Profile};
+use crate::limb::{fillets, front_bend, natural_bend, point_in_polygon, skin_limb, soft_elbow, solve_elbow, within_reach, Fillet, LimbShape, Profile};
 use crate::pet::{ParticleKind, Pose};
 use crate::rig::{HeadXf, Rig, TORSO_H};
 use crate::scene::*;
@@ -468,11 +468,12 @@ fn torso_pts(skin: &Skin) -> Vec<Pt> {
     let more = cubic_chain(pt(0.0, 8.0), &left, 18);
     pts.extend_from_slice(&more[1..more.len() - 1]);
     // A soft fur fringe along the flanks for fluffy builds.
+    // Only low on the hips: higher up it would ripple the smooth side the front legs blend into.
     if bf > 1.05 {
-        let amp = (bf - 1.0) * 6.0;
+        let amp = (bf - 1.0) * 4.0;
         for q in pts.iter_mut() {
-            if q.y > -90.0 && q.y < -20.0 {
-                let env = smoothstep(-90.0, -70.0, q.y) * (1.0 - smoothstep(-40.0, -20.0, q.y));
+            if q.y > -62.0 && q.y < -20.0 {
+                let env = smoothstep(-62.0, -50.0, q.y) * (1.0 - smoothstep(-40.0, -20.0, q.y));
                 let bump = (0.5 - 0.5 * (q.y * 0.32).cos()).powf(0.8);
                 q.x += q.x.signum() * amp * env * bump;
             }
@@ -1268,7 +1269,10 @@ struct LegDraw {
 
 impl LegDraw {
     fn new(shape: LimbShape, sock_from: f32, line_from: f32, torso: &[Pt], fillet_r: f32) -> LegDraw {
-        let fillets = fillets(&shape, torso, fillet_r, LEG_SPLIT_Y);
+        // The keyboard hides the body below the split line, but only over its own top face.
+        let keyboard = [KB_TL, KB_TR, KB_BR, KB_BL];
+        let visible = |q: Pt| q.y < LEG_SPLIT_Y || !point_in_polygon(q, &keyboard);
+        let fillets = fillets(&shape, torso, fillet_r, &visible);
         let outline = shape.polygon(f32::MIN, 1.0);
         let bbox = outline.iter().fold((pt(f32::MAX, f32::MAX), pt(f32::MIN, f32::MIN)), |(lo, hi), q| {
             (pt(lo.x.min(q.x), lo.y.min(q.y)), pt(hi.x.max(q.x), hi.y.max(q.y)))
@@ -1294,7 +1298,7 @@ struct Legs {
 /// the silhouette ink, so the leg reads as part of the body rather than a cut-out on top.
 const CONTOUR: f32 = 1.35;
 /// Arm length of the fillet curve where a leg grows out of the silhouette.
-const FILLET_R: f32 = 10.0;
+const FILLET_R: f32 = 13.0;
 
 impl Legs {
     fn new(pose: &Pose, skin: &Skin, rig: &Rig) -> Legs {
@@ -1309,8 +1313,9 @@ impl Legs {
             root: w * 0.62,
         };
         let leg = Profile { outer: [16.0, 14.0, 12.0, 11.0, 10.5], inner: [12.0, 11.0, 10.0, 10.0, 9.5], root: 15.0 };
-        let (upper, lower) = rig.arm_bones();
         let (thigh, shin) = rig.leg_bones();
+        // Sock size in canvas units, the same however far the leg reaches.
+        let sock_len = sh.sock_length * rig.rest_arm_span();
 
         let mut items = Vec::with_capacity(4);
         let mut hind = [None, None];
@@ -1330,11 +1335,17 @@ impl Legs {
 
         let fronts = [0, 1].map(|side| {
             let s = side_sign(side);
-            let paw = pose.paws[side].pos + pt(0.0, pose.paws[side].press * 1.8);
             let joint = rig.shoulder(side);
-            let elbow = if pose.elbows[side].is_finite() { pose.elbows[side] } else { solve_elbow(joint, paw, upper, lower, front_bend(s)) };
+            let paw = within_reach(joint, pose.paws[side].pos + pt(0.0, pose.paws[side].press * 1.8), rig.arm_reach());
+            let elbow = if pose.elbows[side].is_finite() { pose.elbows[side] } else { soft_elbow(joint, paw, front_bend(s), natural_bend(joint, paw)) };
             let shape = skin_limb(rig.arm_root(side), joint, elbow, paw, &arm);
-            LegDraw::new(shape, 1.0 - sh.sock_length, 0.15, &torso, FILLET_R)
+            // Arc length of the drawn leg, shoulder to paw.
+            let first = shape.first_index_from(0.0);
+            let len: f32 = (first..shape.center.len() - 1).map(|i| (shape.center[i + 1] - shape.center[i]).len()).sum();
+            let sock_from = (1.0 - sock_len / len.max(1.0)).clamp(0.08, 0.92);
+            // The inner contour only starts a little way down the leg, so the shoulder reads as
+            // one piece with the body.
+            LegDraw::new(shape, sock_from, 0.28, &torso, FILLET_R)
         });
         // A paw reaching across to the other side of the chest is drawn in front.
         let crossing = |side: usize| (fronts[side].shape.wrist.x - DOG_X) * side_sign(side) < -4.0;
@@ -1536,16 +1547,25 @@ fn draw_legs_over_keyboard(p: &mut Painter, pose: &Pose, legs: &Legs, skin: &Ski
         }
         let from = leg.shape.first_index_from(su);
         let s = &leg.shape;
+        // Full outline only where the leg is over the keyboard; beside it (over the body, or
+        // reaching for the mouse) the leg keeps exactly the lines it had in the body pass.
+        let keyboard = [KB_TL + pt(-3.0, -6.0), KB_TR + pt(3.0, -6.0), KB_BR + pt(3.0, 0.0), KB_BL + pt(-3.0, 0.0)];
         let widths = [0, 1].map(|e| {
             let edge = if e == 0 { &s.outer } else { &s.inner };
             (0..edge.len())
                 .map(|i| {
                     let base = if leg.behind[e][i] { leg.contour[e][i] } else { INK };
-                    lerp(base, INK, smoothstep(LEG_SPLIT_Y, KB_TL.y + 3.0, edge[i].y))
+                    if point_in_polygon(edge[i], &keyboard) {
+                        lerp(base, INK, smoothstep(LEG_SPLIT_Y, KB_TL.y + 3.0, edge[i].y))
+                    } else {
+                        base
+                    }
                 })
                 .collect::<Vec<f32>>()
         });
-        ink_fillets(p, leg, skin, Some(Clip::Tmp));
+        // Fillet outlines are not redrawn here: the body pass drew them (fillets never start
+        // over the keyboard), and redrawing them without the body's fill on top would leave
+        // a stray line where a curve runs along the inside of the body.
         fill_leg(p, legs, leg, skin, Some(Clip::Tmp), from);
         edge_bands(p, leg, skin, Some(Clip::Tmp), from, [&widths[0], &widths[1]]);
         fill_fillets(p, legs, leg, skin, Some(Clip::Tmp));

@@ -38,6 +38,41 @@ pub fn solve_elbow(joint: Pt, wrist: Pt, upper: f32, lower: f32, prefer: Pt) -> 
     elbow
 }
 
+/// Elbow of a front leg seen from the front. A leg that doesn't need its full length is not
+/// drawn bowed out sideways (that bulges past the body); it keeps a gentle bend of `bend` ×
+/// the shoulder–paw distance towards `prefer`, and reads as pointing a little towards the
+/// viewer. Callers keep the paw within reach, so the leg never stretches.
+pub fn soft_elbow(joint: Pt, wrist: Pt, prefer: Pt, bend: f32) -> Pt {
+    let d = wrist - joint;
+    let span = d.len();
+    if span < 1e-3 {
+        return joint + prefer.normalized();
+    }
+    let perp = d.perp() * (1.0 / span);
+    let side = if perp.x * prefer.x + perp.y * prefer.y >= 0.0 { 1.0 } else { -1.0 };
+    joint.lerp(wrist, 0.5) + perp * (side * bend * span)
+}
+
+/// How much a front leg bends towards `wrist`: seen from the front a dog's elbow points back,
+/// so a leg reaching down to the keys stays almost straight, while a leg reaching out to the
+/// side (to the mouse) shows a clear, soft bend.
+pub fn natural_bend(joint: Pt, wrist: Pt) -> f32 {
+    let d = wrist - joint;
+    let side = (d.x.abs() / d.len().max(1e-3)).clamp(0.0, 1.0);
+    lerp(0.025, 0.09, smoothstep(0.35, 0.85, side))
+}
+
+/// `target`, pulled back towards `joint` if it is further away than `reach`.
+pub fn within_reach(joint: Pt, target: Pt, reach: f32) -> Pt {
+    let d = target - joint;
+    let l = d.len();
+    if l > reach && l > 1e-6 {
+        joint + d * (reach / l)
+    } else {
+        target
+    }
+}
+
 /// Width profile of a limb, as half-widths at u = 0 (joint), 0.25, 0.5 (elbow), 0.75, 1 (wrist).
 #[derive(Clone, Copy, Debug)]
 pub struct Profile {
@@ -234,6 +269,29 @@ fn walk(from: Pt, pts: impl Iterator<Item = Pt>, dist: f32) -> Vec<Pt> {
     out
 }
 
+/// `pts` moved `d` units into `poly` (each point along its local normal, towards whichever
+/// side is inside the polygon).
+fn inset(pts: &[Pt], poly: &[Pt], d: f32) -> Vec<Pt> {
+    let n = pts.len();
+    (0..n)
+        .map(|i| {
+            let a = pts[i.saturating_sub(1)];
+            let b = pts[(i + 1).min(n - 1)];
+            let normal = (b - a).normalized().perp();
+            if point_in_polygon(pts[i] + normal * d, poly) {
+                pts[i] + normal * d
+            } else {
+                pts[i] - normal * d
+            }
+        })
+        .collect()
+}
+
+/// How far a fillet's region reaches into the leg and the body it joins. The overlap is the
+/// same fur colour, and it means no two anti-aliased edges ever meet over the ink drawn
+/// underneath, so no hairline seam can show.
+const FILLET_OVERLAP: f32 = 1.6;
+
 /// The smooth web where a limb grows out of the body. At the point an edge of the limb leaves
 /// the body outline, the union of the two shapes has a sharp inward corner; the fillet fills
 /// that corner up to a quadratic curve, so the silhouette flows from the body into the limb
@@ -252,13 +310,15 @@ pub struct Fillet {
 
 /// Fillets for the first place each edge of `shape` leaves the closed `body` outline (walking
 /// from the root towards the wrist), with arms of length `radius` along the edge and along
-/// the body. Only exits above `max_y` count (below it the body is hidden).
-pub fn fillets(shape: &LimbShape, body: &[Pt], radius: f32, max_y: f32) -> Vec<Fillet> {
+/// the body. Only exits where `visible` says the body can be seen count (elsewhere something,
+/// such as the keyboard, covers that part of the body).
+pub fn fillets(shape: &LimbShape, body: &[Pt], radius: f32, visible: &dyn Fn(Pt) -> bool) -> Vec<Fillet> {
     let mut out = Vec::new();
     let nb = body.len();
     if nb < 3 {
         return out;
     }
+    let limb = shape.polygon(f32::MIN, 1.0);
     for outer in [true, false] {
         let edge = if outer { &shape.outer } else { &shape.inner };
         let n = edge.len();
@@ -278,28 +338,62 @@ pub fn fillets(shape: &LimbShape, body: &[Pt], radius: f32, max_y: f32) -> Vec<F
                 }
                 let Some((t, j)) = best else { break };
                 let x = a.lerp(b, t);
-                if x.y > max_y {
+                if !visible(x) {
                     break;
                 }
                 let exit_u = lerp(shape.u[i], shape.u[i + 1], t);
-                // Along the limb edge, outwards.
-                let along_edge = walk(x, edge[i + 1..].iter().copied(), radius);
-                // Along the body, in the direction that leaves the limb's interior.
-                let inward = shape.center[i].lerp(shape.center[i + 1], t) - x;
-                let dir = body[(j + 1) % nb] - body[j];
-                let forward = dir.x * inward.x + dir.y * inward.y < 0.0;
-                let along_body = if forward {
-                    walk(x, (1..=nb).map(|k| body[(j + k) % nb]), radius)
-                } else {
-                    walk(x, (0..nb).map(|k| body[(j + nb - k) % nb]), radius)
+                // Along the body, in the direction that leaves the limb's interior: probe a few
+                // units each way and keep the side that is outside the limb. (Comparing
+                // directions alone is unreliable when leg and body edges run almost parallel,
+                // and the wrong choice folds the curve back into a spike.)
+                let probe = |fwd: bool| {
+                    let pts: Vec<Pt> = if fwd {
+                        walk(x, (1..=nb).map(|k| body[(j + k) % nb]), 3.0)
+                    } else {
+                        walk(x, (0..nb).map(|k| body[(j + nb - k) % nb]), 3.0)
+                    };
+                    pts.last().copied().unwrap_or(x)
                 };
+                let (in_f, in_b) = (point_in_polygon(probe(true), &limb), point_in_polygon(probe(false), &limb));
+                let forward = if in_f != in_b {
+                    !in_f
+                } else {
+                    let inward = shape.center[i].lerp(shape.center[i + 1], t) - x;
+                    let dir = body[(j + 1) % nb] - body[j];
+                    dir.x * inward.x + dir.y * inward.y < 0.0
+                };
+                let body_walk = |r: f32| {
+                    if forward {
+                        walk(x, (1..=nb).map(|k| body[(j + k) % nb]), r)
+                    } else {
+                        walk(x, (0..nb).map(|k| body[(j + nb - k) % nb]), r)
+                    }
+                };
+                // The narrower the notch between leg and body (an arm raised past the
+                // cheek), the longer the fillet, so it stays a soft round curve instead of a
+                // tight hook.
+                let probe_e = walk(x, edge[i + 1..].iter().copied(), radius).last().copied().unwrap_or(x);
+                let probe_b = body_walk(radius).last().copied().unwrap_or(x);
+                let (de, db) = ((probe_e - x).normalized(), (probe_b - x).normalized());
+                let cos = de.x * db.x + de.y * db.y;
+                let r = radius * lerp(1.0, 2.1, smoothstep(-0.2, 0.85, cos));
+                let along_edge = walk(x, edge[i + 1..].iter().copied(), r);
+                let along_body = body_walk(r);
                 let (Some(&ea), Some(&bb)) = (along_edge.last(), along_body.last()) else { break };
                 const STEPS: usize = 12;
                 let curve: Vec<Pt> = (0..=STEPS).map(|k| quad(ea, x, bb, k as f32 / STEPS as f32)).collect();
-                let mut region = vec![x];
-                region.extend_from_slice(&along_edge);
-                region.extend_from_slice(&curve[1..STEPS]);
-                region.extend(along_body.iter().rev());
+                // The region overlaps the leg and the body a little along the two edges it
+                // shares with them (see FILLET_OVERLAP); the free side is the new curve.
+                let mut edge_side = vec![x];
+                edge_side.extend_from_slice(&along_edge);
+                let mut body_side = vec![x];
+                body_side.extend_from_slice(&along_body);
+                let edge_in = inset(&edge_side, &limb, FILLET_OVERLAP);
+                let body_in = inset(&body_side, body, FILLET_OVERLAP);
+                let mut region = Vec::with_capacity(edge_in.len() + body_in.len() + STEPS + 2);
+                region.extend_from_slice(&edge_in);
+                region.extend_from_slice(&curve[..=STEPS]);
+                region.extend(body_in.iter().rev());
                 out.push(Fillet { region, curve, outer, exit: x, exit_u });
                 break;
             }
