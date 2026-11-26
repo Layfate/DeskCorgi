@@ -974,14 +974,13 @@ fn draw_head(p: &mut Painter, pose: &Pose, skin: &Skin, rig: &Rig, o: &RenderOpt
     }
 
     draw_eyes(p, pose, skin, h, o);
-    draw_nose_mouth(p, pose, skin, h);
-
-    // whisker dots
+    // whisker dots (under the mouth, so an open mouth covers the ones at its corners)
     for s in [-1.0f32, 1.0] {
         for q in [pt(s * 9.0, 30.0), pt(s * 12.5, 26.5), pt(s * 12.5, 33.0)] {
             p.fill(&circle(h.map_dome(q, 5.0), 0.95 * h.scale), pal.markings.fade(0.5));
         }
     }
+    draw_nose_mouth(p, pose, skin, h);
 
     p.stroke(&silhouette, pal.outline, st.head_ink);
     draw_focus_mark(p, pose, h);
@@ -1166,22 +1165,31 @@ fn draw_nose_mouth(p: &mut Painter, pose: &Pose, skin: &Skin, h: &HeadXf) {
         pb.close();
         let mouth = affine_path(pb.finish(), f);
         p.fill(&mouth, pal.mouth.mix(rgb(0x9A, 0x30, 0x3A), 0.55));
+        p.stroke(&mouth, mouth_line, 1.7 * h.scale);
         if pose.tongue > 0.1 {
-            let tl = 9.0 + depth * 0.45;
-            let hang = 9.0 + depth + 4.5 * pose.tongue;
-            let mut tb = PathBuilder::new();
-            tb.move_to(-5.2, tl);
-            tb.quad_to(0.0, tl - 2.5, 5.2, tl);
-            tb.line_to(5.2, hang - 4.0);
-            tb.quad_to(5.2, hang + 0.5, 0.0, hang + 0.5);
-            tb.quad_to(-5.2, hang + 0.5, -5.2, hang - 4.0);
+            // A soft rounded tongue resting on the lower lip and lolling out over it: drawn
+            // after the mouth outline so the lip line does not cut across it.
+            let t = pose.tongue;
+            let tl = 9.6 + depth * 0.4;
+            let hang = 9.0 + depth + 4.0 * t;
+            let (w0, w1) = (4.4, 5.4);
+            let mut sides = PathBuilder::new();
+            sides.move_to(-w0, tl + 1.2);
+            sides.cubic_to(-w0 - 0.4, tl + 4.0, -w1, hang - 6.0, -w1, hang - 3.2);
+            sides.cubic_to(-w1, hang - 0.4, -2.8, hang + 1.0, 0.0, hang + 1.0);
+            sides.cubic_to(2.8, hang + 1.0, w1, hang - 0.4, w1, hang - 3.2);
+            sides.cubic_to(w1, hang - 6.0, w0 + 0.4, tl + 4.0, w0, tl + 1.2);
+            let mut tb = sides.clone();
+            tb.quad_to(0.0, tl - 1.8, -w0, tl + 1.2);
             tb.close();
             let tongue = affine_path(tb.finish(), f);
             p.fill(&tongue, pal.tongue);
-            p.stroke(&affine_path(polyline(&[pt(0.0, tl + 1.0), pt(0.0, hang - 3.0)]), f), pal.tongue.darken(0.22), 1.1 * h.scale);
-            p.stroke(&tongue, pal.tongue.darken(0.35), 1.1 * h.scale);
+            // A little sheen on the tip, a soft centre crease, and an outline only where the
+            // tongue meets fur (the top edge disappears into the dark of the mouth).
+            p.fill(&affine_path(poly(&ellipse_pts(pt(-2.0, hang - 2.6), 1.5, 0.9, 12)), f), WHITE.fade(0.35));
+            p.stroke(&affine_path(polyline(&[pt(0.0, tl + 1.6), pt(0.0, hang - 3.4)]), f), pal.tongue.darken(0.18), 1.0 * h.scale);
+            p.stroke(&affine_path(sides.finish(), f), pal.tongue.darken(0.38), 1.1 * h.scale);
         }
-        p.stroke(&mouth, mouth_line, 1.7 * h.scale);
     } else {
         if pose.tongue > 0.2 {
             // A little "blep".
