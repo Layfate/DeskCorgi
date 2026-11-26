@@ -296,6 +296,10 @@ impl Painter<'_> {
     }
 
     fn set_mask(&mut self, clip: Clip, path: &Option<Path>) {
+        self.set_mask_aa(clip, path, true);
+    }
+
+    fn set_mask_aa(&mut self, clip: Clip, path: &Option<Path>, anti_alias: bool) {
         let ts = self.ts;
         let mask: &mut Mask = match clip {
             Clip::Head => &mut *self.head,
@@ -304,7 +308,7 @@ impl Painter<'_> {
         };
         mask.clear();
         if let Some(path) = path {
-            mask.fill_path(path, FillRule::Winding, true, ts);
+            mask.fill_path(path, FillRule::Winding, anti_alias, ts);
         }
     }
 }
@@ -1634,7 +1638,10 @@ fn fill_fillets(p: &mut Painter, legs: &Legs, leg: &LegDraw, skin: &Skin, clip: 
 fn draw_legs_over_keyboard(p: &mut Painter, pose: &Pose, legs: &Legs, skin: &Skin, desk: f32) {
     let pal = &skin.palette;
     let below = poly(&[pt(-50.0, LEG_SPLIT_Y), pt(CANVAS_W + 50.0, LEG_SPLIT_Y), pt(CANVAS_W + 50.0, CANVAS_H + 50.0), pt(-50.0, CANVAS_H + 50.0)]);
-    p.set_mask(Clip::Tmp, &below);
+    // A hard edge: this pass redraws the legs in the same order as the body pass, so the two
+    // meet seamlessly on a pixel row. A soft edge left a faint line across the legs there
+    // (a back leg half-painted over a front leg), which shows when the keyboard is gone.
+    p.set_mask_aa(Clip::Tmp, &below, false);
     for leg in &legs.items {
         let su = split_u(leg);
         if su >= 1.0 {
