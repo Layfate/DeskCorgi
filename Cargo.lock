@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "deskcorgi"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "deskcorgi-core",
  "deskcorgi-windows",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "deskcorgi-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde",
  "tiny-skia",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "deskcorgi-windows"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "deskcorgi-core",
  "windows-sys",
