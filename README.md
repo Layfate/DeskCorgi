@@ -1,30 +1,29 @@
 <div align="center">
 
-<img src="assets/deskcorgi.png" alt="DeskCorgi logo" width="200">
-
-# DeskCorgi
+# <img src="assets/deskcorgi.png" alt="" height="44" align="center"> DeskCorgi
 
 **A tiny desktop corgi that sits behind its own little keyboard and mirrors everything you type and click.**
 
 <p>
-  <a href="https://github.com/Layfate/DeskCorgi/releases/latest"><img src="https://img.shields.io/github/v/release/Layfate/DeskCorgi?style=flat-square&label=Release&color=1f6feb" alt="Release"></a>
-  <a href="https://github.com/Layfate/DeskCorgi/releases"><img src="https://img.shields.io/github/downloads/Layfate/DeskCorgi/total?style=flat-square&label=Downloads&color=2ea44f" alt="Downloads"></a>
-  <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-555555?style=flat-square" alt="Platform">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Layfate/DeskCorgi?style=flat-square&color=8957e5" alt="License"></a>
+  <a href="https://github.com/Layfate/DeskCorgi/releases/latest"><img src="https://img.shields.io/github/v/release/Layfate/DeskCorgi?style=flat&label=Release&color=1f6feb" alt="Release"></a>
+  <a href="https://github.com/Layfate/DeskCorgi/releases"><img src="https://img.shields.io/github/downloads/Layfate/DeskCorgi/total?style=flat&label=Downloads&color=2ea44f" alt="Downloads"></a>
+  <a href="https://github.com/Layfate/DeskCorgi/stargazers"><img src="https://img.shields.io/github/stars/Layfate/DeskCorgi?style=flat&label=Stars&color=e3b341" alt="Stars"></a>
+  <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-555555?style=flat" alt="Platform">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Layfate/DeskCorgi?style=flat&label=License&color=8957e5" alt="License"></a>
 </p>
 
 <p>
-  <a href="https://github.com/Layfate/DeskCorgi/releases/latest"><b>Download</b></a> ·
-  <a href="#custom-skins">Custom skins</a> ·
-  <a href="#build-from-source">Build from source</a> ·
-  <a href="#privacy">Privacy</a>
+  🐶 <a href="https://github.com/Layfate/DeskCorgi/releases/latest"><b>Download</b></a> ·
+  🎨 <a href="#custom-skins">Custom skins</a> ·
+  🛠️ <a href="#build-from-source">Build from source</a> ·
+  🔒 <a href="#privacy">Privacy</a>
 </p>
 
 <p>
-  <img src="assets/demo_typing.gif" width="265" alt="The corgi typing, with the keys popping up">
-  <img src="assets/demo_mouse.gif" width="265" alt="The corgi using its mouse and waving">
-  <img src="assets/demo_pet.gif" width="265" alt="The corgi being petted, then doing zoomies">
+  <img src="assets/demo_typing.gif" width="266" alt="A tricolor corgi typing, with the keys popping up, then tilting its head at a few Backspaces"> <img src="assets/demo_mouse.gif" width="266" alt="A blue merle corgi moving its mouse along with the pointer, clicking and waving"> <img src="assets/demo_pet.gif" width="266" alt="A fawn corgi being petted, then doing zoomies">
 </p>
+
+<sub>Native Windows app in Rust (Win32 + Raw Input + tiny-skia) · one ~1.2 MB exe · no installer · no network access</sub>
 
 </div>
 
@@ -140,6 +139,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 CI runs both on Windows, Linux and macOS. For changes to the dog's artwork, see [`art/README.md`](art/README.md).
+The demo GIFs at the top are rendered from the real animation code: `sh tools/demo_gifs.sh` (needs ffmpeg) rebuilds them.
 
 ## Privacy
 
