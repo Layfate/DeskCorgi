@@ -1,8 +1,7 @@
 //! Skins: colours, body-shape numbers and optional vector markings.
 //!
 //! A skin is data, not images: the renderer draws the dog from it every frame, so every
-//! dog shares one rig and one renderer. The built-ins are three Corgis (red, tricolor and
-//! blue merle); the other shape options (curled tail, bib, urajiro, brows) stay available
+//! dog shares one rig and one renderer. The built-in is the red Corgi; the other shape options (curled tail, bib, urajiro, brows) stay available
 //! for imported skins. Rules (same as KuroCat's skin format):
 //! numbers are clamped to their legal range, unknown fields are ignored, and type errors,
 //! bad colours or missing required fields reject the whole file with a clear message.
@@ -24,8 +23,6 @@ pub const MAX_MARK_POINTS: usize = 512;
 pub const COORD_LIMIT: f32 = 400.0;
 
 pub const BUILTIN_CORGI: &str = "corgi";
-pub const BUILTIN_TRICOLOR: &str = "tricolor";
-pub const BUILTIN_MERLE: &str = "merle";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Skin {
@@ -246,17 +243,17 @@ pub fn corgi() -> Skin {
             iris: None,
         },
         shape: Shape {
-            body_width: 1.12,
+            body_width: 1.16,
             leg_length: 0.6,
-            head_scale: 1.05,
-            muzzle_length: 0.95,
-            ear_size: 1.12,
-            ear_spread: 0.3,
-            ear_pointiness: 0.66,
-            eye_size: 1.2,
+            head_scale: 1.14,
+            muzzle_length: 0.85,
+            ear_size: 1.08,
+            ear_spread: 0.45,
+            ear_pointiness: 0.58,
+            eye_size: 1.4,
             eye_lid: 0.0,
             eye_slant: 0.0,
-            cheek_fluff: 0.55,
+            cheek_fluff: 0.9,
             butt_fluff: 1.25,
             tail_style: TailStyle::Stub,
             tail_length: 0.7,
@@ -270,116 +267,144 @@ pub fn corgi() -> Skin {
     }
 }
 
-/// A soft, slightly irregular blob as a polygon (for merle patches and tan points), so
-/// markings look like fur rather than perfect ellipses.
-fn blob(space: Space, color: Rgba, c: Pt, (rx, ry): (f32, f32), rot: f32, wobble: f32, seed: u32) -> Mark {
-    const N: usize = 28;
-    let points = (0..N)
+/// A smooth, slightly wobbly blob (a merle patch or a tan point) as a polygon, rounded to
+/// 0.1 so it writes to a skin file and reads back exactly. `wobble` (0..) makes it uneven.
+fn blob(c: Pt, rx: f32, ry: f32, rot: f32, wobble: f32, seed: f32) -> Vec<Pt> {
+    let n = 28;
+    (0..n)
         .map(|i| {
-            let a = i as f32 / N as f32 * std::f32::consts::TAU;
-            let s = seed as f32;
-            let k = 1.0 + wobble * ((a * 2.0 + s * 1.7).sin() * 0.6 + (a * 3.0 + s * 0.9).cos() * 0.4);
-            let q = pt(a.cos() * rx * k, a.sin() * ry * k);
-            let (sn, cs) = rot.sin_cos();
-            let q = pt(q.x * cs - q.y * sn, q.x * sn + q.y * cs);
+            let a = i as f32 / n as f32 * std::f32::consts::TAU;
+            let k = 1.0 + wobble * (0.6 * (3.0 * a + seed).sin() + 0.4 * (5.0 * a + 2.1 * seed).sin());
+            let q = pt(a.cos() * rx * k, a.sin() * ry * k).rotate(rot);
             pt(((c.x + q.x) * 10.0).round() / 10.0, ((c.y + q.y) * 10.0).round() / 10.0)
         })
-        .collect();
+        .collect()
+}
+
+fn patch(space: Space, color: Rgba, points: Vec<Pt>) -> Mark {
     Mark { space, kind: MarkKind::Polygon, color, width: 2.0, points }
 }
 
-/// Tricolor Corgi (black-headed tri): a black coat with tan eyebrow dots and tan cheeks,
-/// and the usual white blaze, chest and socks. Same shape as the red Corgi.
-pub fn corgi_tricolor() -> Skin {
-    let black = rgb(0x3E, 0x36, 0x3A);
-    let tan = rgb(0xD8, 0x8C, 0x4E);
-    let white = rgb(0xFF, 0xF8, 0xEE);
+/// Tricolor: a black saddle and head with tan eyebrow dots and tan cheeks, white blaze, socks
+/// and bib.
+pub fn tricolor() -> Skin {
+    let black = rgb(0x3D, 0x35, 0x39);
+    let tan = rgb(0xDC, 0x95, 0x58);
     let mut s = corgi();
     s.name = "Tricolor Corgi".into();
-    s.palette = Palette {
-        body: black,
-        body_shade: Some(rgb(0x30, 0x2A, 0x2D)),
-        belly: white,
-        legs: black,
-        paws: white,
-        pads: rgb(0xF2, 0x9C, 0xA3),
-        ear_outer: rgb(0x45, 0x3C, 0x40),
-        ear_inner: rgb(0xF6, 0xC3, 0xB6),
-        nose: rgb(0x22, 0x1A, 0x1C),
-        mouth: rgb(0x3A, 0x2A, 0x2A),
-        tongue: rgb(0xFF, 0x86, 0x9E),
-        tail: black,
-        tail_tip: white,
-        outline: rgb(0x26, 0x1E, 0x21),
-        blush: rgb(0xFF, 0x8F, 0x9A),
-        markings: tan,
-        iris: None,
-    };
-    s.shape.sock_length = 0.58;
+    let p = &mut s.palette;
+    p.body = black;
+    p.body_shade = Some(rgb(0x31, 0x2A, 0x2E));
+    p.legs = black;
+    p.ear_outer = rgb(0x45, 0x3B, 0x40);
+    p.ear_inner = rgb(0xF4, 0xBF, 0xB4);
+    p.nose = rgb(0x1F, 0x18, 0x1A);
+    p.mouth = rgb(0x3A, 0x2A, 0x2A);
+    p.tail = black;
+    p.outline = rgb(0x24, 0x1C, 0x1F);
+    p.blush = rgb(0xFF, 0x94, 0xA4);
+    p.markings = tan;
     s.marks = vec![
-        // Tan eyebrow dots, the classic tri look.
-        blob(Space::Head, tan, pt(-17.0, -22.0), (6.0, 3.8), -0.22, 0.04, 1),
-        blob(Space::Head, tan, pt(17.0, -22.0), (6.0, 3.8), 0.22, 0.04, 2),
-        // Tan cheeks between the eyes and the white muzzle.
-        blob(Space::Head, tan, pt(-50.0, 6.0), (8.5, 6.5), 0.55, 0.06, 3),
-        blob(Space::Head, tan, pt(50.0, 6.0), (8.5, 6.5), -0.55, 0.06, 4),
+        // Eyebrow dots above each eye.
+        patch(Space::Head, tan, blob(pt(-17.0, -14.5), 5.6, 3.6, 0.25, 0.0, 0.0)),
+        patch(Space::Head, tan, blob(pt(17.0, -14.5), 5.6, 3.6, -0.25, 0.0, 0.0)),
+        // Tan cheeks running out past the edge of the face.
+        patch(Space::Head, tan, blob(pt(-56.0, 9.0), 15.0, 10.0, 0.3, 0.0, 0.0)),
+        patch(Space::Head, tan, blob(pt(56.0, 9.0), 15.0, 10.0, -0.3, 0.0, 0.0)),
     ];
     s
 }
 
-/// Blue Merle Corgi: a soft blue-grey coat with darker merle patches, white trim and
-/// blue eyes. Same shape as the red Corgi.
-pub fn corgi_merle() -> Skin {
-    let grey = rgb(0xA8, 0xB4, 0xC4);
-    let patch = rgb(0x5A, 0x64, 0x74);
-    let speck = rgb(0x7B, 0x86, 0x97);
-    let white = rgb(0xFF, 0xF9, 0xF2);
+/// Blue merle: soft grey-blue with darker merle patches (one around an eye) and blue eyes.
+pub fn blue_merle() -> Skin {
+    let blue = rgb(0xAB, 0xB8, 0xC8);
+    let dark = rgb(0x5E, 0x69, 0x7A);
     let mut s = corgi();
     s.name = "Blue Merle Corgi".into();
-    s.palette = Palette {
-        body: grey,
-        body_shade: Some(rgb(0x95, 0xA2, 0xB4)),
-        belly: white,
-        legs: grey,
-        paws: white,
-        pads: rgb(0xF4, 0xA3, 0xAE),
-        ear_outer: rgb(0x9C, 0xA8, 0xB9),
-        ear_inner: rgb(0xF8, 0xCB, 0xC4),
-        nose: rgb(0x2C, 0x2A, 0x31),
-        mouth: rgb(0x3C, 0x35, 0x40),
-        tongue: rgb(0xFF, 0x86, 0x9E),
-        tail: grey,
-        tail_tip: white,
-        outline: rgb(0x45, 0x4E, 0x5C),
-        blush: rgb(0xFF, 0x9B, 0xA8),
-        markings: patch,
-        iris: Some(rgb(0x5C, 0xB2, 0xE6)),
-    };
+    let p = &mut s.palette;
+    p.body = blue;
+    p.body_shade = Some(rgb(0x98, 0xA6, 0xB8));
+    p.legs = blue;
+    p.ear_outer = rgb(0x9E, 0xAB, 0xBC);
+    p.ear_inner = rgb(0xF8, 0xCB, 0xC6);
+    p.nose = rgb(0x2C, 0x2A, 0x31);
+    p.mouth = rgb(0x3C, 0x35, 0x40);
+    p.tail = blue;
+    p.outline = rgb(0x46, 0x4F, 0x5D);
+    p.blush = rgb(0xFF, 0x9D, 0xAE);
+    p.markings = dark;
+    p.iris = Some(rgb(0x5C, 0xB2, 0xE6));
     s.marks = vec![
-        // Merle patches on the head, painted on the face like the blaze (`head` space), so
-        // they turn, tilt and scale exactly with the eyes. The big patch over one eye runs
-        // well past the head's edge and is clipped by the outline there; the small spots sit
-        // fully inside the face.
-        blob(Space::Head, patch, pt(-44.0, -31.0), (29.0, 19.0), 0.45, 0.12, 5),
-        blob(Space::Head, patch, pt(28.0, -34.0), (10.0, 7.5), -0.3, 0.15, 6),
-        blob(Space::Head, speck, pt(11.0, -43.0), (5.0, 4.0), 0.0, 0.1, 7),
-        // On the body.
-        blob(Space::Body, patch, pt(-30.0, -112.0), (14.0, 11.0), 0.5, 0.15, 8),
-        blob(Space::Body, patch, pt(34.0, -66.0), (17.0, 13.0), -0.4, 0.13, 9),
-        blob(Space::Body, patch, pt(-44.0, -44.0), (12.0, 9.0), 0.2, 0.14, 10),
-        blob(Space::Body, speck, pt(10.0, -30.0), (6.0, 5.0), 0.0, 0.1, 11),
-        blob(Space::Body, speck, pt(48.0, -100.0), (5.0, 4.0), 0.0, 0.1, 12),
-        // One darker ear.
-        blob(Space::EarL, patch, pt(10.0, -45.0), (34.0, 40.0), 0.2, 0.1, 13),
+        // A patch around the viewer-right eye, and one on the far side of the crown.
+        patch(Space::Head, dark, blob(pt(29.0, 2.0), 15.5, 14.0, 0.2, 0.08, 1.0)),
+        patch(Space::Head, dark, blob(pt(-38.0, -40.0), 17.0, 11.0, -0.4, 0.1, 2.0)),
+        patch(Space::Head, dark, blob(pt(-8.0, -45.0), 6.5, 4.5, 0.1, 0.12, 3.0)),
+        // Merle spots on the body.
+        patch(Space::Body, dark, blob(pt(-46.0, -96.0), 11.0, 15.0, 0.3, 0.12, 4.0)),
+        patch(Space::Body, dark, blob(pt(50.0, -46.0), 13.0, 10.0, -0.5, 0.12, 5.0)),
+        patch(Space::Body, dark, blob(pt(-54.0, -28.0), 8.0, 6.0, 0.2, 0.12, 6.0)),
+        patch(Space::Body, dark, blob(pt(40.0, -112.0), 6.0, 7.5, 0.0, 0.12, 7.0)),
     ];
     s
 }
 
-/// The built-in dogs, in menu order: (id, constructor).
+/// Fawn: a pale honey-gold coat.
+pub fn fawn() -> Skin {
+    let honey = rgb(0xF2, 0xBD, 0x7C);
+    let mut s = corgi();
+    s.name = "Fawn Corgi".into();
+    let p = &mut s.palette;
+    p.body = honey;
+    p.body_shade = Some(rgb(0xE6, 0xA6, 0x62));
+    p.legs = honey;
+    p.ear_outer = rgb(0xEC, 0xB0, 0x6C);
+    p.ear_inner = rgb(0xFB, 0xCF, 0xC2);
+    p.tail = honey;
+    p.outline = rgb(0x7A, 0x4C, 0x2C);
+    p.markings = rgb(0xC9, 0x8A, 0x4A);
+    s
+}
+
+/// Sable: rich red-brown with darker tipped fur on the back and a soft widow's peak.
+pub fn sable() -> Skin {
+    let red = rgb(0xC9, 0x6E, 0x37);
+    let dark = rgb(0x8E, 0x4C, 0x27);
+    let mut s = corgi();
+    s.name = "Sable Corgi".into();
+    let p = &mut s.palette;
+    p.body = red;
+    // Darker on the back, lighter towards the seat.
+    p.body_shade = Some(rgb(0xE2, 0x93, 0x52));
+    p.legs = red;
+    p.ear_outer = rgb(0xA8, 0x5A, 0x2E);
+    p.ear_inner = rgb(0xF6, 0xC2, 0xB2);
+    p.tail = red;
+    p.outline = rgb(0x4E, 0x2A, 0x17);
+    p.markings = dark;
+    // Widow's peak: a darker cap over the crown, dipping to a point above the blaze.
+    let mut cap: Vec<Pt> = (0..=24)
+        .map(|i| {
+            let x = -70.0 + 140.0 * i as f32 / 24.0;
+            let u = (x / 70.0).abs();
+            let y = -40.0 + 12.0 * u * u - 4.0 * (1.0 - u).powi(3);
+            pt(x, (y * 10.0).round() / 10.0)
+        })
+        .collect();
+    cap.extend([pt(70.0, -70.0), pt(-70.0, -70.0)]);
+    s.marks = vec![
+        patch(Space::Head, dark.fade(0.55), cap),
+        // Darker saddle along the back.
+        patch(Space::Body, dark.fade(0.45), blob(pt(0.0, -150.0), 70.0, 48.0, 0.0, 0.0, 0.0)),
+    ];
+    s
+}
+
 /// Builds a built-in skin.
 pub type SkinFn = fn() -> Skin;
 
-pub const BUILTINS: [(&str, SkinFn); 3] = [(BUILTIN_CORGI, corgi), (BUILTIN_TRICOLOR, corgi_tricolor), (BUILTIN_MERLE, corgi_merle)];
+/// The built-in dogs, in menu order: (id, constructor).
+pub const BUILTINS: [(&str, SkinFn); 5] =
+    [(BUILTIN_CORGI, corgi), ("tricolor", tricolor), ("blue_merle", blue_merle), ("fawn", fawn), ("sable", sable)];
 
 pub fn builtin(id: &str) -> Option<Skin> {
     BUILTINS.iter().find(|(b, _)| *b == id).map(|(_, f)| f())
@@ -803,7 +828,7 @@ impl Skin {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SkinEntry {
-    /// A built-in id (`corgi`, `tricolor`, `merle`) or the 16-hex-digit content hash of an
+    /// A built-in id (`corgi`) or the 16-hex-digit content hash of an
     /// imported file.
     pub id: String,
     pub name: String,
@@ -1001,7 +1026,7 @@ mod tests {
         assert_eq!(list_imported(&dir), vec![entry.clone()]);
         assert_eq!(load(&entry.id, &dir).unwrap().name, "Mini");
         assert!(load("../etc", &dir).is_none());
-        assert_eq!(load(BUILTIN_MERLE, &dir).unwrap(), corgi_merle());
+        assert_eq!(load(BUILTIN_CORGI, &dir).unwrap(), corgi());
         assert!(load("shiba", &dir).is_none(), "the Shiba is no longer built in");
         delete_imported(&entry.id, &dir).unwrap();
         assert!(list_imported(&dir).is_empty());
@@ -1013,9 +1038,10 @@ mod tests {
     #[test]
     fn template_files_match_builtins() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skins");
-        for (file, skin) in [("corgi.toml", corgi()), ("corgi_tricolor.toml", corgi_tricolor()), ("corgi_merle.toml", corgi_merle())] {
-            let text = std::fs::read_to_string(root.join(file)).expect("template file exists");
-            assert_eq!(text.replace("\r\n", "\n"), skin.to_toml(), "{file} is out of date: run `cargo run -p deskcorgi-core --example export_skins`");
+        for (id, f) in BUILTINS {
+            let file = format!("{id}.toml");
+            let text = std::fs::read_to_string(root.join(&file)).expect("template file exists");
+            assert_eq!(text.replace("\r\n", "\n"), f().to_toml(), "{file} is out of date: run `cargo run -p deskcorgi-core --example export_skins`");
         }
     }
 }

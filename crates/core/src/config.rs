@@ -184,7 +184,7 @@ impl FrameRate {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
-    /// A built-in id (`corgi`, `tricolor`, `merle`) or an imported skin id.
+    /// A built-in id (`corgi`) or an imported skin id.
     pub skin: String,
     pub size: usize,
     pub eye_color: EyeColor,
@@ -196,6 +196,10 @@ pub struct Settings {
     pub chase: bool,
     pub zoomies: bool,
     pub sleep: bool,
+    /// Yawns now and then while idle.
+    pub yawn: bool,
+    /// Puzzled head tilt at a few quick Backspaces.
+    pub huh: bool,
     pub frame_rate: FrameRate,
     pub full_click_through: bool,
     pub lock_position: bool,
@@ -221,6 +225,8 @@ impl Default for Settings {
             chase: true,
             zoomies: true,
             sleep: true,
+            yawn: true,
+            huh: true,
             frame_rate: FrameRate::Smooth,
             full_click_through: false,
             lock_position: false,
@@ -245,6 +251,8 @@ struct RawSettings {
     chase: Option<bool>,
     zoomies: Option<bool>,
     sleep: Option<bool>,
+    yawn: Option<bool>,
+    huh: Option<bool>,
     frame_rate: Option<String>,
     full_click_through: Option<bool>,
     lock_position: Option<bool>,
@@ -281,6 +289,8 @@ impl Settings {
             chase: r.chase.unwrap_or(d.chase),
             zoomies: r.zoomies.unwrap_or(d.zoomies),
             sleep: r.sleep.unwrap_or(d.sleep),
+            yawn: r.yawn.unwrap_or(d.yawn),
+            huh: r.huh.unwrap_or(d.huh),
             frame_rate: r.frame_rate.as_deref().and_then(FrameRate::parse).unwrap_or(d.frame_rate),
             full_click_through: r.full_click_through.unwrap_or(d.full_click_through),
             lock_position: r.lock_position.unwrap_or(d.lock_position),
@@ -308,6 +318,8 @@ impl Settings {
             ("chase", self.chase),
             ("zoomies", self.zoomies),
             ("sleep", self.sleep),
+            ("yawn", self.yawn),
+            ("huh", self.huh),
             ("full_click_through", self.full_click_through),
             ("lock_position", self.lock_position),
             ("always_on_top", self.always_on_top),
@@ -373,7 +385,7 @@ mod tests {
     #[test]
     fn round_trip() {
         let s = Settings {
-            skin: "merle".into(),
+            skin: "0123456789abcdef".into(),
             size: 4,
             eye_color: EyeColor::Green,
             keyboard: KeyboardTheme::Sakura,

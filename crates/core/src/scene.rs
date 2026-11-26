@@ -3,7 +3,7 @@
 //! The dog faces the viewer. The keyboard faces the dog, so from the viewer's side it is
 //! rotated 180°: the space bar is nearest the dog (top). The mouse sits under the dog's right
 //! paw (the viewer's left) and also faces the dog: its buttons and cable point towards the
-//! viewer, and it moves as the dog's mirror image of the user's mouse.
+//! viewer. It slides around its pad following the user's cursor (see [`mouse_spot`]).
 
 use crate::geom::{pt, Pt};
 use crate::keymap::{cell, KeyId, ROWS, ROW_UNITS};
@@ -33,8 +33,25 @@ const KEY_V1: f32 = 0.9;
 pub const PAD_CENTER: Pt = pt(95.0, 284.0);
 pub const PAD_W: f32 = 74.0;
 pub const PAD_H: f32 = 52.0;
-/// Resting position of the mouse body.
+/// Resting position of the mouse body (the cursor in the middle of its screen).
 pub const MOUSE_REST: Pt = pt(95.0, 282.0);
+/// How far the mouse body travels from `MOUSE_REST` when the cursor is at a screen edge.
+/// It keeps the whole mouse on its pad.
+pub const MOUSE_RANGE: Pt = pt(17.0, 6.5);
+
+/// Where the mouse sits on its pad for a cursor at `screen` (its position on the monitor,
+/// (0, 0) top-left to (1, 1) bottom-right), as an offset from `MOUSE_REST`. It moves the same
+/// way as the cursor on screen: cursor right → mouse right, cursor up → mouse up the pad.
+pub fn mouse_spot(screen: Pt) -> Pt {
+    let u = screen.x.clamp(0.0, 1.0) * 2.0 - 1.0;
+    let v = screen.y.clamp(0.0, 1.0) * 2.0 - 1.0;
+    pt(u * MOUSE_RANGE.x, v * MOUSE_RANGE.y)
+}
+
+/// Keeps a mouse offset on the pad.
+pub fn clamp_mouse(off: Pt) -> Pt {
+    pt(off.x.clamp(-MOUSE_RANGE.x, MOUSE_RANGE.x), off.y.clamp(-MOUSE_RANGE.y, MOUSE_RANGE.y))
+}
 
 /// Index 0 = viewer's left (the dog's right paw); 1 = viewer's right (the dog's left paw).
 pub const VIEWER_LEFT: usize = 0;

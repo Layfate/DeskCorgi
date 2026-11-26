@@ -65,6 +65,8 @@ const ID_CHASE: u32 = 400;
 const ID_ZOOMIES: u32 = 401;
 const ID_SLEEP: u32 = 402;
 const ID_COUNT_KEYS: u32 = 403;
+const ID_YAWN: u32 = 404;
+const ID_HUH: u32 = 405;
 const ID_FRAME_RATE: u32 = 410;
 const ID_CLICK_THROUGH: u32 = 500;
 const ID_LOCK: u32 = 501;
@@ -106,6 +108,44 @@ struct Drag {
     last_t: Instant,
 }
 
+/// Live reload of the dog's art while it is being drawn: set `DESKCORGI_ART` to the path of an
+/// art file (`art/corgi.toml`) and every save shows up on the running dog within half a second.
+struct ArtWatch {
+    path: PathBuf,
+    stamp: Option<std::time::SystemTime>,
+    next_check: Instant,
+}
+
+impl ArtWatch {
+    fn from_env() -> Option<ArtWatch> {
+        let path = PathBuf::from(std::env::var_os("DESKCORGI_ART")?);
+        Some(ArtWatch { path, stamp: None, next_check: Instant::now() })
+    }
+
+    /// The newly saved art, if the file changed since the last look and parses.
+    fn poll(&mut self) -> Option<deskcorgi_core::Art> {
+        let now = Instant::now();
+        if now < self.next_check {
+            return None;
+        }
+        self.next_check = now + std::time::Duration::from_millis(500);
+        let stamp = std::fs::metadata(&self.path).and_then(|m| m.modified()).ok();
+        if stamp.is_none() || stamp == self.stamp {
+            return None;
+        }
+        self.stamp = stamp;
+        let text = std::fs::read_to_string(&self.path).ok()?;
+        match deskcorgi_core::art::parse_art(&text) {
+            Ok(art) => Some(art),
+            Err(e) => {
+                // Keep drawing the last good art.
+                eprintln!("DESKCORGI_ART {}: {e}", self.path.display());
+                None
+            }
+        }
+    }
+}
+
 struct App {
     host: HWND,
     pet_hwnd: HWND,
@@ -145,6 +185,7 @@ struct App {
     autostart: bool,
     elevated: bool,
     jobs: Vec<Job>,
+    art_watch: Option<ArtWatch>,
 }
 
 fn loword(v: usize) -> u32 {
@@ -211,13 +252,21 @@ impl App {
         if let Some(r) = window_rect(self.pet_hwnd) {
             self.pos = POINT { x: r.left, y: r.top };
         }
-        let cursor = cursor_pos().map(|c| self.to_canvas(c));
+        let screen_cursor = cursor_pos();
+        let cursor = screen_cursor.map(|c| self.to_canvas(c));
+        // Where the cursor is on its monitor, 0..1 each way: the dog's mouse mirrors it.
+        let cursor_screen = screen_cursor.and_then(|c| {
+            let r = sys::monitor_rect_at(c)?;
+            let (w, h) = ((r.right - r.left).max(1) as f32, (r.bottom - r.top).max(1) as f32);
+            Some(pt((c.x - r.left) as f32 / (w - 1.0).max(1.0), (c.y - r.top) as f32 / (h - 1.0).max(1.0)))
+        });
         self.drag_velocity = self.drag_velocity * (-dt.clamp(0.0, 0.5) * 6.0).exp();
         self.update_click_through();
         self.check_stuck_keys(t);
 
         let input = FrameInput {
             cursor,
+            cursor_screen,
             dragging: self.drag.as_ref().is_some_and(|d| d.moved),
             drag_velocity: self.drag_velocity,
         };
@@ -289,6 +338,9 @@ impl App {
             keyboard: self.settings.keyboard,
             key_glow: self.settings.key_glow,
         };
+        if let Some(art) = self.art_watch.as_mut().and_then(ArtWatch::poll) {
+            self.renderer.set_art(art);
+        }
         let r0 = Instant::now();
         let pm = self.renderer.render(self.pet.pose(), &self.skin, &opts);
         self.work_secs += r0.elapsed().as_secs_f64() * 1000.0;
@@ -650,6 +702,8 @@ impl App {
             add(fun, ID_CHASE, "Chase a shaking cursor", s.chase);
             add(fun, ID_ZOOMIES, "Zoomies on click spam", s.zoomies);
             add(fun, ID_SLEEP, "Nap after 5 idle minutes", s.sleep);
+            add(fun, ID_YAWN, "Yawn when idle", s.yawn);
+            add(fun, ID_HUH, "Tilt head at Backspace spam", s.huh);
             sub(menu, fun, "Behaviour");
 
             let fps = CreatePopupMenu();
@@ -726,6 +780,8 @@ impl App {
             ID_CHASE => self.toggle(|s| &mut s.chase),
             ID_ZOOMIES => self.toggle(|s| &mut s.zoomies),
             ID_SLEEP => self.toggle(|s| &mut s.sleep),
+            ID_YAWN => self.toggle(|s| &mut s.yawn),
+            ID_HUH => self.toggle(|s| &mut s.huh),
             _ if in_range(ID_FRAME_RATE, FrameRate::ALL.len()) => {
                 self.settings.frame_rate = FrameRate::ALL[(id - ID_FRAME_RATE) as usize];
                 self.mark_dirty();
@@ -1221,6 +1277,7 @@ pub fn run() -> i32 {
         autostart: sys::autostart_enabled(),
         elevated: sys::is_elevated(),
         jobs: Vec::new(),
+        art_watch: ArtWatch::from_env(),
     };
 
     let pet_hwnd = unsafe {

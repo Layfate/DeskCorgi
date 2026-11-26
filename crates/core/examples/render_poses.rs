@@ -5,7 +5,7 @@ use std::path::Path;
 
 use deskcorgi_core::geom::{pt, Pt};
 use deskcorgi_core::keymap::key;
-use deskcorgi_core::skin::{corgi, corgi_merle, corgi_tricolor};
+use deskcorgi_core::skin::corgi;
 use deskcorgi_core::{FrameInput, InputEvent, MoodConfig, MouseButton, Pet, Pose, RenderOptions, Renderer, Skin};
 use tiny_skia::{Color, Pixmap, PixmapPaint, Transform};
 
@@ -77,6 +77,7 @@ fn scenario(name: &str, skin: &Skin) -> Pose {
             cursor: far,
             dragging: true,
             drag_velocity: pt(if i < 10 { 600.0 } else { -300.0 }, -150.0),
+            ..Default::default()
         }),
         "zoomies" => {
             run(&mut pet, skin, 0.3, &cfg, |p, _| {
@@ -96,7 +97,7 @@ const SCENARIOS: [&str; 10] = ["idle", "look right", "typing", "mouse + click", 
 
 fn main() {
     let scale: f32 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(1.0);
-    let skins = [corgi(), corgi_tricolor(), corgi_merle()];
+    let skins = [corgi()];
     let (cw, ch) = deskcorgi_core::render::pixel_size(scale);
     let cols = SCENARIOS.len().min(5) as u32;
     let rows_per_skin = (SCENARIOS.len() as u32).div_ceil(cols);

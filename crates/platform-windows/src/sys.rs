@@ -172,6 +172,19 @@ pub fn work_area_near(p: POINT) -> RECT {
     }
 }
 
+/// Rectangle of the monitor a point is on (or the nearest one).
+pub fn monitor_rect_at(p: POINT) -> Option<RECT> {
+    unsafe {
+        let mon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
+        if mon.is_null() {
+            return None;
+        }
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        (GetMonitorInfoW(mon, &mut mi) != 0).then_some(mi.rcMonitor)
+    }
+}
+
 /// Whether any part of the rectangle is on a connected monitor.
 pub fn rect_visible(r: &RECT) -> bool {
     unsafe { !MonitorFromRect(r, MONITOR_DEFAULTTONULL).is_null() }

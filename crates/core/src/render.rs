@@ -11,12 +11,13 @@ use tiny_skia::{
     PixmapPaint, Point, RadialGradient, Shader, SpreadMode, Stroke, Transform,
 };
 
+use crate::art::{self, Art, Shape, TURN_YAW};
 use crate::color::{rgb, rgba, Rgba, WHITE};
 use crate::config::{EyeColor, KeyboardColors, KeyboardTheme};
 use crate::geom::{clamp01, lerp, pt, smoothstep, Affine, Pt};
 use crate::glyphs;
 use crate::keymap::{all_keys, key_kind, KeyId, KeyKind, KEY_COUNT};
-use crate::limb::{fillets, front_bend, natural_bend, point_in_polygon, skin_limb, soft_elbow, solve_elbow, within_reach, Fillet, LimbShape, Profile};
+use crate::limb::{fillets, front_bend, point_in_polygon, skin_limb, solve_elbow, Fillet, LimbShape, Profile};
 use crate::pet::{ParticleKind, Pose};
 use crate::rig::{HeadXf, Rig, TORSO_H};
 use crate::scene::*;
@@ -48,6 +49,7 @@ pub struct Renderer {
     scale: f32,
     keyboard: Option<Layer>,
     ground: Option<Layer>,
+    art: Art,
 }
 
 /// A static part of the scene pre-rendered once per theme and size, then blitted each frame.
@@ -70,7 +72,7 @@ impl Layer {
         let mut pixmap = new_pixmap(w, h);
         let [mut m0, mut m1, mut m2] = new_masks(1, 1);
         let ts = Transform::from_row(s, 0.0, 0.0, s, -x as f32, -y as f32);
-        let mut p = Painter { pm: &mut pixmap, ts, head: &mut m0, body: &mut m1, tmp: &mut m2 };
+        let mut p = Painter { pm: &mut pixmap, ts, head: &mut m0, body: &mut m1, tmp: &mut m2, art: art::builtin() };
         draw(&mut p);
         Layer { pixmap, x, y, theme, width }
     }
@@ -87,11 +89,20 @@ impl Layer {
 impl Renderer {
     pub fn new(scale: f32) -> Renderer {
         let (w, h) = pixel_size(scale);
-        Renderer { pixmap: new_pixmap(w, h), masks: new_masks(w, h), scale, keyboard: None, ground: None }
+        Renderer { pixmap: new_pixmap(w, h), masks: new_masks(w, h), scale, keyboard: None, ground: None, art: art::builtin().clone() }
     }
 
     pub fn pixmap(&self) -> &Pixmap {
         &self.pixmap
+    }
+
+    /// Swaps in another drawing of the dog (see [`crate::art`]).
+    pub fn set_art(&mut self, art: Art) {
+        self.art = art;
+    }
+
+    pub fn art(&self) -> &Art {
+        &self.art
     }
 
     pub fn render(&mut self, pose: &Pose, skin: &Skin, opts: &RenderOptions) -> &Pixmap {
@@ -116,7 +127,7 @@ impl Renderer {
             }));
         }
         let [m0, m1, m2] = &mut self.masks;
-        let mut p = Painter { pm: &mut self.pixmap, ts: Transform::from_scale(s, s), head: m0, body: m1, tmp: m2 };
+        let mut p = Painter { pm: &mut self.pixmap, ts: Transform::from_scale(s, s), head: m0, body: m1, tmp: m2, art: &self.art };
         draw_scene(&mut p, pose, skin, opts, self.ground.as_ref(), self.keyboard.as_ref());
         &self.pixmap
     }
@@ -141,7 +152,7 @@ pub fn render_icon(skin: &Skin, size: u32, eye_color: EyeColor) -> Pixmap {
     let c = rig.head.center;
     let k = size as f32 / 168.0;
     let ts = Transform::from_row(k, 0.0, 0.0, k, size as f32 / 2.0 - c.x * k, size as f32 * 0.56 - (c.y) * k);
-    let mut p = Painter { pm: &mut pm, ts, head: &mut m0, body: &mut m1, tmp: &mut m2 };
+    let mut p = Painter { pm: &mut pm, ts, head: &mut m0, body: &mut m1, tmp: &mut m2, art: art::builtin() };
     let opts = RenderOptions { eye_color, ..Default::default() };
     draw_ears(&mut p, &pose, skin, &rig);
     draw_head(&mut p, &pose, skin, &rig, &opts);
@@ -165,6 +176,7 @@ struct Painter<'a> {
     head: &'a mut Mask,
     body: &'a mut Mask,
     tmp: &'a mut Mask,
+    art: &'a Art,
 }
 
 fn paint(c: Rgba) -> Paint<'static> {
@@ -224,6 +236,17 @@ impl Painter<'_> {
             Clip::Tmp => &*self.tmp,
         };
         self.pm.fill_path(path, &paint, FillRule::Winding, self.ts, Some(mask));
+    }
+
+    fn stroke_shader_clipped(&mut self, path: &Option<Path>, shader: Option<Shader<'static>>, width: f32, clip: Clip) {
+        let (Some(path), Some(shader)) = (path, shader) else { return };
+        let paint = Paint { shader, anti_alias: true, ..Paint::default() };
+        let mask: &Mask = match clip {
+            Clip::Head => &*self.head,
+            Clip::Body => &*self.body,
+            Clip::Tmp => &*self.tmp,
+        };
+        self.pm.stroke_path(path, &paint, &stroke_style(width, LineCap::Round), self.ts, Some(mask));
     }
 
     fn stroke(&mut self, path: &Option<Path>, c: Rgba, width: f32) {
@@ -319,41 +342,6 @@ fn quad(p0: Pt, p1: Pt, p2: Pt, t: f32) -> Pt {
     p0 * (u * u) + p1 * (2.0 * u * t) + p2 * (t * t)
 }
 
-/// Tessellates a chain of cubic segments `[start, (c1, c2, end)...]` into points.
-fn cubic_chain(start: Pt, segs: &[(Pt, Pt, Pt)], n: usize) -> Vec<Pt> {
-    let mut out = Vec::with_capacity(segs.len() * n + 1);
-    let mut p0 = start;
-    out.push(p0);
-    for &(c1, c2, p3) in segs {
-        for i in 1..=n {
-            out.push(cubic(p0, c1, c2, p3, i as f32 / n as f32));
-        }
-        p0 = p3;
-    }
-    out
-}
-
-/// Closed Catmull-Rom spline through `pts`, tessellated.
-fn smooth_closed(pts: &[Pt], n: usize) -> Vec<Pt> {
-    let len = pts.len();
-    let mut out = Vec::with_capacity(len * n);
-    if len < 3 {
-        return pts.to_vec();
-    }
-    for i in 0..len {
-        let p0 = pts[(i + len - 1) % len];
-        let p1 = pts[i];
-        let p2 = pts[(i + 1) % len];
-        let p3 = pts[(i + 2) % len];
-        let c1 = p1 + (p2 - p0) * (1.0 / 6.0);
-        let c2 = p2 - (p3 - p1) * (1.0 / 6.0);
-        for k in 0..n {
-            out.push(cubic(p1, c1, c2, p2, k as f32 / n as f32));
-        }
-    }
-    out
-}
-
 /// Polygon with rounded corners.
 fn rounded_poly(pts: &[Pt], r: f32) -> Option<Path> {
     let n = pts.len();
@@ -413,7 +401,7 @@ fn draw_scene(p: &mut Painter, pose: &Pose, skin: &Skin, o: &RenderOptions, grou
         }
     }
     draw_tail(p, pose, skin, &rig);
-    let legs = Legs::new(pose, skin, &rig);
+    let legs = Legs::new(p.art, pose, skin, &rig);
     draw_body(p, skin, &rig, &legs);
     draw_ears(p, pose, skin, &rig);
     draw_head(p, pose, skin, &rig, o);
@@ -450,23 +438,22 @@ fn draw_shadow(p: &mut Painter) {
 
 // ---- torso ----------------------------------------------------------------------------------
 
-fn torso_pts(skin: &Skin) -> Vec<Pt> {
+/// `butt_fluff` and `ear_pointiness` the art file's torso and ears are drawn at; skins
+/// with other values deform the art relative to these.
+const ART_BUTT_FLUFF: f32 = 1.25;
+const ART_EAR_POINTINESS: f32 = 0.66;
+
+fn torso_pts(art: &Art, skin: &Skin) -> Vec<Pt> {
     let bf = skin.shape.butt_fluff;
-    let top = -TORSO_H;
-    let hip = 60.0 + 16.0 * (bf - 1.0);
-    let right = [
-        (pt(24.0, top), pt(40.0, top + 12.0), pt(42.0, -100.0)),
-        (pt(44.0, -78.0), pt(hip - 5.0, -56.0), pt(hip, -28.0)),
-        (pt(hip + 3.0, -6.0), pt(50.0, 8.0), pt(0.0, 8.0)),
-    ];
-    let mut pts = cubic_chain(pt(0.0, top), &right, 18);
-    let left: Vec<(Pt, Pt, Pt)> = vec![
-        (pt(-50.0, 8.0), pt(-hip - 3.0, -6.0), pt(-hip, -28.0)),
-        (pt(-hip + 5.0, -56.0), pt(-44.0, -78.0), pt(-42.0, -100.0)),
-        (pt(-40.0, top + 12.0), pt(-24.0, top), pt(0.0, top)),
-    ];
-    let more = cubic_chain(pt(0.0, 8.0), &left, 18);
-    pts.extend_from_slice(&more[1..more.len() - 1]);
+    // The hips move out 16 units per 1.0 of butt fluff, only between the waist and the seat.
+    let dx = 16.0 * (bf - ART_BUTT_FLUFF);
+    let mut pts = art
+        .at("torso", 0.0)
+        .map_ctrl(|q| {
+            let w = smoothstep(-78.0, -60.0, q.y) * (1.0 - smoothstep(-4.0, 8.0, q.y));
+            pt(q.x + q.x.signum() * dx * w, q.y)
+        })
+        .outline();
     // A soft fur fringe along the flanks for fluffy builds.
     // Only low on the hips: higher up it would ripple the smooth side the front legs blend into.
     if bf > 1.05 {
@@ -483,35 +470,13 @@ fn torso_pts(skin: &Skin) -> Vec<Pt> {
 }
 
 /// The chest fur marking in body space, if the skin has one.
-fn chest_pts(skin: &Skin) -> Option<Vec<Pt>> {
-    match skin.shape.chest {
-        Chest::Ruff => {
-            let mut pts = vec![pt(-31.0, -140.0), pt(31.0, -140.0)];
-            pts.extend(cubic_chain(pt(31.0, -140.0), &[(pt(37.0, -116.0), pt(35.0, -92.0), pt(29.0, -70.0))], 10).into_iter().skip(1));
-            // scalloped bottom edge
-            let n = 4;
-            for i in 0..n {
-                let x0 = 29.0 - 58.0 * i as f32 / n as f32;
-                let x1 = 29.0 - 58.0 * (i + 1) as f32 / n as f32;
-                let ctrl = pt((x0 + x1) / 2.0, -50.0);
-                for k in 1..=6 {
-                    pts.push(quad(pt(x0, -70.0), ctrl, pt(x1, -70.0), k as f32 / 6.0));
-                }
-            }
-            pts.extend(cubic_chain(pt(-29.0, -70.0), &[(pt(-35.0, -92.0), pt(-37.0, -116.0), pt(-31.0, -140.0))], 10).into_iter().skip(1));
-            Some(pts)
-        }
-        Chest::Bib => Some(cubic_chain(
-            pt(-27.0, -142.0),
-            &[
-                (pt(-4.0, -142.0), pt(4.0, -142.0), pt(27.0, -142.0)),
-                (pt(32.0, -108.0), pt(24.0, -66.0), pt(0.0, -44.0)),
-                (pt(-24.0, -66.0), pt(-32.0, -108.0), pt(-27.0, -142.0)),
-            ],
-            14,
-        )),
-        Chest::None => None,
-    }
+fn chest_pts(art: &Art, skin: &Skin) -> Option<Vec<Pt>> {
+    let id = match skin.shape.chest {
+        Chest::Ruff => "chest.ruff",
+        Chest::Bib => "chest.bib",
+        Chest::None => return None,
+    };
+    Some(art.at(id, 0.0).outline())
 }
 
 /// Visible outline width used everywhere on the body and legs.
@@ -537,7 +502,7 @@ fn draw_body(p: &mut Painter, skin: &Skin, rig: &Rig, legs: &Legs) {
     let shade = pal.body_shade.unwrap_or(pal.body);
     p.fill_shader(&torso, linear(top, bottom, pal.body, shade), pal.body);
     p.set_mask(Clip::Body, &torso);
-    if let Some(pts) = chest_pts(skin) {
+    if let Some(pts) = chest_pts(p.art, skin) {
         p.fill_clipped(&poly(&map_pts(&pts, |q| rig.body.map(q))), pal.belly, Clip::Body);
     }
     draw_custom(p, skin, Space::Body, rig, None);
@@ -598,7 +563,7 @@ fn tail_geom(pose: &Pose, skin: &Skin, rig: &Rig) -> Option<TailGeom> {
     let n = 28;
     let (center, half): (Vec<Pt>, Vec<f32>) = match skin.shape.tail_style {
         TailStyle::Curl => {
-            let base = rig.torso.map(pt(50.0, -72.0));
+            let base = rig.torso_pt(pt(50.0, -72.0));
             let c = base + pt(15.0, -27.0) * l;
             let r0 = (base - c).len();
             let a0 = (base.y - c.y).atan2(base.x - c.x);
@@ -615,7 +580,7 @@ fn tail_geom(pose: &Pose, skin: &Skin, rig: &Rig) -> Option<TailGeom> {
             (pts, half)
         }
         TailStyle::Plume => {
-            let base = rig.torso.map(pt(54.0, -26.0));
+            let base = rig.torso_pt(pt(54.0, -26.0));
             let c1 = base + pt(36.0, 10.0) * l;
             let c2 = base + pt(72.0, -16.0) * l;
             let end = base + pt(62.0, -70.0) * l;
@@ -648,7 +613,7 @@ fn draw_tail(p: &mut Painter, pose: &Pose, skin: &Skin, rig: &Rig) {
     if skin.shape.tail_style == TailStyle::Stub {
         // A round fluffy puff peeking out behind the hip; it wiggles with the rear end.
         let r = 13.0 * skin.shape.tail_length.powf(0.5) * 1.2;
-        let base = rig.torso.map(pt(52.0 + 16.0 * (skin.shape.butt_fluff - 1.0), -44.0));
+        let base = rig.torso_pt(pt(52.0 + 16.0 * (skin.shape.butt_fluff - 1.0), -44.0));
         let c = base + pt(8.0, -5.0).rotate(pose.tail_wag * 1.4);
         let pts: Vec<Pt> = (0..72)
             .map(|i| {
@@ -659,7 +624,7 @@ fn draw_tail(p: &mut Painter, pose: &Pose, skin: &Skin, rig: &Rig) {
             .collect();
         let path = poly(&pts);
         p.fill_shader(&path, linear(c + pt(-r, -r), c + pt(r, r), pal.tail, pal.tail_tip), pal.tail);
-        p.stroke(&path, pal.outline, 2.2);
+        p.stroke(&path, pal.outline, p.art.style.tail_ink);
         return;
     }
     let Some(g) = tail_geom(pose, skin, rig) else { return };
@@ -683,12 +648,14 @@ fn draw_tail(p: &mut Painter, pose: &Pose, skin: &Skin, rig: &Rig) {
     tip.extend((tip_start..n).rev().map(|i| g.center[i] - g.normal[i] * (g.half[i] * 1.3)));
     p.fill_clipped(&poly(&tip), pal.tail_tip, Clip::Tmp);
     draw_custom(p, skin, Space::Tail, rig, Some(&g));
-    p.stroke(&outline, pal.outline, 2.2);
+    p.stroke(&outline, pal.outline, p.art.style.tail_ink);
 }
 
 // ---- ears -------------------------------------------------------------------------------------
 
-fn ear_frame(pose: &Pose, skin: &Skin, head: &HeadXf, side: usize) -> Affine {
+/// The ear's frame on the canvas, and how far it is turned edge-on (0..1: the ear on the side
+/// the head turns towards).
+fn ear_frame(pose: &Pose, skin: &Skin, head: &HeadXf, side: usize) -> (Affine, f32) {
     let sh = &skin.shape;
     let s = side_sign(side);
     let e = sh.ear_size;
@@ -699,72 +666,70 @@ fn ear_frame(pose: &Pose, skin: &Skin, head: &HeadXf, side: usize) -> Affine {
     let height = 50.0 * e * (1.0 + pose.ear_perk * 0.06 - pose.ear_fold * 0.3);
     let spread = sh.ear_spread + pose.ear_fold * 0.75 - pose.ear_perk * 0.1 + pose.ear_twitch[side];
     let tip = mid + pt(0.0, -height).rotate(s * spread);
-    let mut ci = head.map_flat(inner, 9.0);
-    let mut co = head.map_flat(outer, 9.0);
+    // The base sits on the head's dome, so the ears turn with the face; the tip stands above it.
+    let mut ci = head.map_dome(inner, 0.0);
+    let mut co = head.map_dome(outer, 0.0);
     let ct = head.map_flat(tip, 5.0);
-    // The ear on the side the head turns towards is seen more edge-on.
-    let turn = clamp01(head.yaw * s / 0.42);
-    co = ci + (co - ci) * (1.0 - 0.32 * turn);
+    // The ear on the side the head turns towards is seen more edge-on (the dome already
+    // narrows it a little).
+    let turn = clamp01(head.yaw * s / TURN_YAW);
+    co = ci + (co - ci) * (1.0 - 0.18 * turn);
     ci = ci + (co - ci) * (0.06 * turn);
     let o = ci.lerp(co, 0.5);
-    Affine::from_axes(o, (co - ci) * (1.0 / 100.0), (o - ct) * (1.0 / 100.0))
+    (Affine::from_axes(o, (co - ci) * (1.0 / 100.0), (o - ct) * (1.0 / 100.0)), turn)
 }
 
-fn ear_outer_path(pointy: f32) -> Option<Path> {
-    let tw = 5.5 / pointy.max(0.5);
-    let mut pb = PathBuilder::new();
-    pb.move_to(-50.0, 0.0);
-    pb.cubic_to(-47.0, -38.0, -24.0, -78.0, -tw, -97.0);
-    pb.quad_to(0.0, -101.5, tw, -97.0);
-    pb.cubic_to(24.0, -78.0, 47.0, -38.0, 50.0, 0.0);
-    pb.cubic_to(20.0, 9.0, -20.0, 9.0, -50.0, 0.0);
-    pb.close();
-    pb.finish()
-}
-
-fn ear_inner_path(pointy: f32) -> Option<Path> {
-    let tw = 3.5 / pointy.max(0.5);
-    let mut pb = PathBuilder::new();
-    pb.move_to(-30.0, -4.0);
-    pb.cubic_to(-27.0, -34.0, -13.0, -62.0, -tw, -77.0);
-    pb.quad_to(0.0, -81.0, tw, -77.0);
-    pb.cubic_to(13.0, -62.0, 27.0, -34.0, 30.0, -4.0);
-    pb.cubic_to(12.0, 1.0, -12.0, 1.0, -30.0, -4.0);
-    pb.close();
-    pb.finish()
+/// An ear part at `turn`, with the tip narrowed or widened for the skin's ear pointiness.
+fn ear_shape(art: &Art, id: &str, turn: f32, pointy: f32) -> Shape {
+    let s = art.at(id, turn);
+    let k = ART_EAR_POINTINESS / pointy.max(0.5);
+    let (lo, _) = s.bounds();
+    let tip_y = lo.y + 6.0;
+    let tip: Vec<f32> = s.subs.iter().flat_map(|sp| std::iter::once(sp.start).chain(sp.segs.iter().flatten().copied())).filter(|q| q.y < tip_y).map(|q| q.x).collect();
+    let cx = (tip.iter().copied().fold(f32::MAX, f32::min) + tip.iter().copied().fold(f32::MIN, f32::max)) / 2.0;
+    s.map_ctrl(|q| if q.y < tip_y { pt(cx + (q.x - cx) * k, q.y) } else { q })
 }
 
 fn draw_ears(p: &mut Painter, pose: &Pose, skin: &Skin, rig: &Rig) {
     let pal = &skin.palette;
+    let art = p.art;
+    let pointy = skin.shape.ear_pointiness;
     for side in 0..2 {
-        let f = ear_frame(pose, skin, &rig.head, side);
-        let outer = affine_path(ear_outer_path(skin.shape.ear_pointiness), f);
-        let inner = affine_path(ear_inner_path(skin.shape.ear_pointiness), f);
+        let (f, turn) = ear_frame(pose, skin, &rig.head, side);
+        let outer = ear_shape(art, "ear.outer", turn, pointy).map_ctrl(|q| f.map(q)).to_path();
+        let inner = ear_shape(art, "ear.inner", turn, pointy).map_ctrl(|q| f.map(q)).to_path();
         p.fill(&outer, pal.ear_outer);
         p.set_mask(Clip::Tmp, &outer);
-        p.fill_clipped(&inner, pal.ear_inner, Clip::Tmp);
+        let fade = art.style.ear_inner_fade;
+        if fade > 0.0 {
+            // Pink deep inside, fading into the ear's own fur at the base.
+            let base = pal.ear_inner.mix(pal.ear_outer, fade);
+            p.fill_shader_clipped(&inner, linear(f.map(pt(0.0, -60.0)), f.map(pt(0.0, -2.0)), pal.ear_inner, base), pal.ear_inner, Some(Clip::Tmp));
+        } else {
+            p.fill_clipped(&inner, pal.ear_inner, Clip::Tmp);
+        }
         // a little fur line inside the ear
-        let a = f.map(pt(0.0, -18.0));
-        let b = f.map(pt(4.0, -52.0));
-        p.stroke_clipped(&polyline(&[a, b]), pal.ear_outer.fade(0.35), 1.4, LineCap::Round, Clip::Tmp);
+        let fur = map_pts(&art.at("ear.fur", turn).outline(), |q| f.map(q));
+        p.stroke_clipped(&polyline(&fur), pal.ear_outer.fade(0.35), 1.4, LineCap::Round, Clip::Tmp);
+        let tuft = art.at("ear.tuft", turn).map_ctrl(|q| f.map(q)).to_path();
+        p.fill_clipped(&tuft, pal.belly.fade(0.92), Clip::Tmp);
         let space = if side == VIEWER_LEFT { Space::EarL } else { Space::EarR };
         draw_custom_ear(p, skin, space, f);
-        p.stroke(&outer, pal.outline, 2.3);
+        p.stroke(&outer, pal.outline, art.style.ear_ink);
     }
 }
 
 // ---- head -------------------------------------------------------------------------------------
 
-fn head_space_outline(skin: &Skin) -> Vec<Pt> {
-    let segs = [
-        (pt(32.0, -50.0), pt(57.0, -38.0), pt(60.0, -12.0)),
-        (pt(63.0, 10.0), pt(52.0, 34.0), pt(30.0, 42.0)),
-        (pt(16.0, 47.0), pt(-16.0, 47.0), pt(-30.0, 42.0)),
-        (pt(-52.0, 34.0), pt(-63.0, 10.0), pt(-60.0, -12.0)),
-        (pt(-57.0, -38.0), pt(-32.0, -50.0), pt(0.0, -49.0)),
-    ];
-    let mut pts = cubic_chain(pt(0.0, -49.0), &segs, 32);
-    pts.pop(); // closed: last == first
+/// Eye centres (viewer-right one; the other is mirrored) in head space. Big eyes set a little
+/// below the middle of the head, with the nose tucked between them, read as cute.
+const EYE: Pt = pt(24.0, 8.0);
+/// Nose position in head space (the mouth hangs from it).
+const NOSE: Pt = pt(0.0, 19.0);
+
+/// The head outline in head space at turn `t`, with the skin's cheek fluff.
+fn head_space_outline(art: &Art, skin: &Skin, t: f32) -> Vec<Pt> {
+    let mut pts = art.at("head", t).outline();
     let amp = 3.6 * skin.shape.cheek_fluff;
     if amp > 0.05 {
         // Fluffy cheek tufts on both sides of the jaw.
@@ -784,67 +749,74 @@ fn head_space_outline(skin: &Skin) -> Vec<Pt> {
     pts
 }
 
+/// The head outline on the canvas.
+fn head_outline(art: &Art, skin: &Skin, h: &HeadXf) -> Vec<Pt> {
+    let pts = head_space_outline(art, skin, h.yaw / TURN_YAW);
+    if art.part("head").turn.is_some() {
+        map_pts(&pts, |q| h.map_turned(q, 4.0))
+    } else {
+        map_pts(&pts, |q| h.map_flat(q, 4.0))
+    }
+}
+
+/// Radial gradient from `c0` at `c` to `c1` at the edge of an ellipse `rx` × `ry`.
+fn radial(c: Pt, rx: f32, ry: f32, c0: Rgba, c1: Rgba) -> Option<Shader<'static>> {
+    let k = ry / rx.max(1e-3);
+    RadialGradient::new(
+        Point::from_xy(c.x, c.y),
+        Point::from_xy(c.x, c.y),
+        rx,
+        vec![GradientStop::new(0.0, c0.to_skia()), GradientStop::new(1.0, c1.to_skia())],
+        SpreadMode::Pad,
+        Transform::from_row(1.0, 0.0, 0.0, k, 0.0, c.y * (1.0 - k)),
+    )
+}
+
 fn draw_head(p: &mut Painter, pose: &Pose, skin: &Skin, rig: &Rig, o: &RenderOptions) {
     let pal = &skin.palette;
     let sh = &skin.shape;
+    let art = p.art;
+    let st = &art.style;
     let h = &rig.head;
-    let silhouette = poly(&map_pts(&head_space_outline(skin), |q| h.map_flat(q, 4.0)));
+    let t = h.yaw / TURN_YAW;
+    let outline = head_outline(art, skin, h);
+    let silhouette = poly(&outline);
+
+    // The soft shadow the head casts on the chest (only where there is body under it).
+    if st.chin_shadow > 0.0 {
+        let c = h.map_flat(pt(0.0, 40.0), 0.0) + pt(0.0, 10.0 * h.scale);
+        let (rx, ry) = (56.0 * h.scale, 17.0 * h.scale);
+        let shade = radial(c, rx, ry, pal.outline.fade(st.chin_shadow), pal.outline.fade(0.0));
+        p.fill_shader_clipped(&poly(&ellipse_pts(c, rx, ry, 40)), shade, rgba(0, 0, 0, 0), Some(Clip::Body));
+    }
+    // A heavier line along the bottom: the outline drawn again a little lower, under the fill.
+    if st.head_ink_drop > 0.0 {
+        let d = pt(0.0, st.head_ink_drop);
+        p.stroke(&poly(&map_pts(&outline, |q| q + d)), pal.outline, st.head_ink);
+    }
     p.fill(&silhouette, pal.body);
     p.set_mask(Clip::Head, &silhouette);
     let dome = |q: Pt| h.map_dome(q, 0.0);
 
     // Face pattern
-    match sh.face {
-        FacePattern::Blaze => {
-            let pts = [
-                pt(-4.0, -58.0),
-                pt(4.0, -58.0),
-                pt(5.5, -32.0),
-                pt(7.5, -12.0),
-                pt(14.0, 3.0),
-                pt(32.0, 9.0),
-                pt(52.0, 20.0),
-                pt(68.0, 40.0),
-                pt(0.0, 72.0),
-                pt(-68.0, 40.0),
-                pt(-52.0, 20.0),
-                pt(-32.0, 9.0),
-                pt(-14.0, 3.0),
-                pt(-7.5, -12.0),
-                pt(-5.5, -32.0),
-            ];
-            p.fill_clipped(&poly(&map_pts(&smooth_closed(&pts, 8), dome)), pal.belly, Clip::Head);
-        }
-        FacePattern::Urajiro => {
-            let pts = [
-                pt(-66.0, 8.0),
-                pt(-46.0, 7.0),
-                pt(-31.0, 13.0),
-                pt(-17.0, 10.0),
-                pt(-9.0, 6.0),
-                pt(0.0, 8.0),
-                pt(9.0, 6.0),
-                pt(17.0, 10.0),
-                pt(31.0, 13.0),
-                pt(46.0, 7.0),
-                pt(66.0, 8.0),
-                pt(70.0, 44.0),
-                pt(0.0, 74.0),
-                pt(-70.0, 44.0),
-            ];
-            p.fill_clipped(&poly(&map_pts(&smooth_closed(&pts, 8), dome)), pal.belly, Clip::Head);
-        }
-        FacePattern::None => {}
+    let face = match sh.face {
+        FacePattern::Blaze => Some("face.blaze"),
+        FacePattern::Urajiro => Some("face.urajiro"),
+        FacePattern::None => None,
+    };
+    if let Some(id) = face {
+        p.fill_clipped(&poly(&map_pts(&art.at(id, t).outline(), dome)), pal.belly, Clip::Head);
     }
 
     // Soft highlight on the crown for volume.
     let sc = h.map_dome(pt(-16.0, -30.0), 0.0);
     let sr = 26.0 * h.scale;
+    let shine_a = (st.crown_shine * 255.0).round() as u8;
     let shine_shader = RadialGradient::new(
         Point::from_xy(sc.x, sc.y),
         Point::from_xy(sc.x, sc.y),
         sr,
-        vec![GradientStop::new(0.0, Color::from_rgba8(255, 255, 255, 46)), GradientStop::new(1.0, Color::from_rgba8(255, 255, 255, 0))],
+        vec![GradientStop::new(0.0, Color::from_rgba8(255, 255, 255, shine_a)), GradientStop::new(1.0, Color::from_rgba8(255, 255, 255, 0))],
         SpreadMode::Pad,
         Transform::identity(),
     );
@@ -854,8 +826,8 @@ fn draw_head(p: &mut Painter, pose: &Pose, skin: &Skin, rig: &Rig, o: &RenderOpt
     }
 
     // Muzzle
-    let mw = 21.0 * (0.9 + 0.1 * sh.muzzle_length);
-    let muzzle_pts = map_pts(&ellipse_pts(pt(0.0, 20.0), mw, 14.5, 40), |q| h.map_dome(q, 5.0));
+    let mk = 0.9 + 0.1 * sh.muzzle_length;
+    let muzzle_pts = map_pts(&art.at("muzzle", t).map_ctrl(|q| pt(q.x * mk, q.y)).outline(), |q| h.map_dome(q, 5.0));
     let muzzle_color = if sh.face == FacePattern::None { pal.body.lighten(0.25) } else { pal.belly };
     p.fill_clipped(&poly(&muzzle_pts), muzzle_color, Clip::Head);
 
@@ -863,18 +835,32 @@ fn draw_head(p: &mut Painter, pose: &Pose, skin: &Skin, rig: &Rig, o: &RenderOpt
     draw_custom(p, skin, Space::Head, rig, None);
     draw_custom(p, skin, Space::Muzzle, rig, None);
 
-    // Blush
+    // Blush (the art is the viewer-left cheek).
     let blush_a = 0.16 + 0.42 * pose.blush;
+    let blush = art.at("blush", 0.0).outline();
     for s in [-1.0f32, 1.0] {
-        let pts = map_pts(&ellipse_pts(pt(s * 38.0, 16.0), 10.5, 6.2, 24), dome);
+        let pts = map_pts(&blush, |q| dome(pt(-s * q.x, q.y)));
         p.fill_clipped(&poly(&pts), pal.blush.fade(blush_a), Clip::Head);
+    }
+
+    // Volume: the lower face falls into soft shade, the crown catches a rim of light.
+    if st.head_shade > 0.0 {
+        let a = h.map_flat(pt(0.0, -6.0), 0.0);
+        let b = h.map_flat(pt(0.0, 50.0), 0.0);
+        p.fill_shader_clipped(&silhouette, linear(a, b, pal.outline.fade(0.0), pal.outline.fade(0.3 * st.head_shade)), rgba(0, 0, 0, 0), Some(Clip::Head));
+    }
+    if st.rim_light > 0.0 {
+        let a = h.map_flat(pt(0.0, -52.0), 0.0);
+        let b = h.map_flat(pt(0.0, -18.0), 0.0);
+        p.stroke_shader_clipped(&silhouette, linear(a, b, WHITE.fade(st.rim_light), WHITE.fade(0.0)), 6.5, Clip::Head);
     }
 
     // Shiba "mayu" brows
     if sh.brows {
+        let brow = art.at("brow", 0.0);
         for s in [-1.0f32, 1.0] {
             let f = h.feature_frame(pt(s * 16.0, -21.0), 1.0, s * 0.22);
-            p.fill(&affine_path(poly(&ellipse_pts(Pt::ZERO, 5.6, 3.3, 20)), f), pal.belly);
+            p.fill(&brow.clone().map_ctrl(|q| f.map(q)).to_path(), pal.belly);
         }
     }
 
@@ -883,12 +869,12 @@ fn draw_head(p: &mut Painter, pose: &Pose, skin: &Skin, rig: &Rig, o: &RenderOpt
 
     // whisker dots
     for s in [-1.0f32, 1.0] {
-        for q in [pt(s * 10.0, 22.0), pt(s * 14.5, 18.5), pt(s * 14.0, 25.0)] {
+        for q in [pt(s * 9.0, 30.0), pt(s * 12.5, 26.5), pt(s * 12.5, 33.0)] {
             p.fill(&circle(h.map_dome(q, 5.0), 0.95 * h.scale), pal.markings.fade(0.5));
         }
     }
 
-    p.stroke(&silhouette, pal.outline, 2.5);
+    p.stroke(&silhouette, pal.outline, st.head_ink);
     draw_focus_mark(p, pose, h);
 }
 
@@ -900,7 +886,7 @@ fn draw_eyes(p: &mut Painter, pose: &Pose, skin: &Skin, h: &HeadXf, o: &RenderOp
     let rx = 10.2 * sh.eye_size;
     let ry = 11.0 * sh.eye_size * (1.0 - sh.eye_lid * 0.25);
     for s in [-1.0f32, 1.0] {
-        let f = h.feature_frame(pt(s * 22.0, -1.0), 2.0, -s * sh.eye_slant);
+        let f = h.feature_frame(pt(s * EYE.x, EYE.y), 2.0, -s * sh.eye_slant);
         if pose.eye_happy > 0.5 {
             // ∩ happy eyes
             let pts: Vec<Pt> = (0..=14)
@@ -1046,10 +1032,20 @@ fn draw_focus_mark(p: &mut Painter, pose: &Pose, h: &HeadXf) {
 
 fn draw_nose_mouth(p: &mut Painter, pose: &Pose, skin: &Skin, h: &HeadXf) {
     let pal = &skin.palette;
-    let f = h.feature_frame(pt(0.0, 12.0), 7.0 + skin.shape.muzzle_length * 6.0, 0.0);
+    let f = h.feature_frame(NOSE, 7.0 + skin.shape.muzzle_length * 6.0, 0.0);
     let o = pose.mouth_open;
     let mouth_line = pal.mouth;
-    if o > 0.12 {
+    if pose.yawn > 0.08 {
+        // A big round yawn, the tongue resting at the bottom.
+        let y = clamp01(pose.yawn);
+        let (rx, ry) = (4.5 + 4.0 * y, 2.0 + 10.0 * y);
+        let c = pt(0.0, 8.6 + ry);
+        let mouth = affine_path(poly(&ellipse_pts(c, rx, ry, 32)), f);
+        p.fill(&mouth, pal.mouth.mix(rgb(0x9A, 0x30, 0x3A), 0.55));
+        let tongue = affine_path(poly(&ellipse_pts(c + pt(0.0, ry * 0.55), rx * 0.68, ry * 0.36, 24)), f);
+        p.fill(&tongue, pal.tongue);
+        p.stroke(&mouth, mouth_line, 1.7 * h.scale);
+    } else if o > 0.12 {
         // Open, happy mouth with a tongue.
         let depth = 15.0 * o;
         let mut pb = PathBuilder::new();
@@ -1093,23 +1089,18 @@ fn draw_nose_mouth(p: &mut Painter, pose: &Pose, skin: &Skin, h: &HeadXf) {
             p.stroke(&tongue, pal.tongue.darken(0.35), 1.0 * h.scale);
         }
         let mut pb = PathBuilder::new();
-        pb.move_to(-9.0, 8.0);
-        pb.quad_to(-4.5, 13.0, 0.0, 8.8);
-        pb.quad_to(4.5, 13.0, 9.0, 8.0);
+        // A small "ω" smile.
+        pb.move_to(-7.5, 8.0);
+        pb.quad_to(-3.8, 12.5, 0.0, 8.8);
+        pb.quad_to(3.8, 12.5, 7.5, 8.0);
         p.stroke(&affine_path(pb.finish(), f), mouth_line, 1.9 * h.scale);
     }
     // philtrum
     p.stroke(&affine_path(polyline(&[pt(0.0, 4.5), pt(0.0, 8.8)]), f), mouth_line, 1.8 * h.scale);
     // nose
-    let mut nb = PathBuilder::new();
-    nb.move_to(-8.5, -3.5);
-    nb.cubic_to(-8.5, -7.8, 8.5, -7.8, 8.5, -3.5);
-    nb.cubic_to(8.5, 0.5, 3.5, 4.6, 0.0, 5.0);
-    nb.cubic_to(-3.5, 4.6, -8.5, 0.5, -8.5, -3.5);
-    nb.close();
-    let nose = affine_path(nb.finish(), f);
-    p.fill(&nose, pal.nose);
-    p.fill(&affine_path(poly(&ellipse_pts(pt(-2.8, -3.9), 2.8, 1.35, 16)), f), WHITE.fade(0.7));
+    let art = p.art;
+    p.fill(&art.at("nose", 0.0).map_ctrl(|q| f.map(q)).to_path(), pal.nose);
+    p.fill(&art.at("nose.shine", 0.0).map_ctrl(|q| f.map(q)).to_path(), WHITE.fade(0.7));
 }
 
 // ---- mouse & keyboard -------------------------------------------------------------------------
@@ -1269,10 +1260,7 @@ struct LegDraw {
 
 impl LegDraw {
     fn new(shape: LimbShape, sock_from: f32, line_from: f32, torso: &[Pt], fillet_r: f32) -> LegDraw {
-        // The keyboard hides the body below the split line, but only over its own top face.
-        let keyboard = [KB_TL, KB_TR, KB_BR, KB_BL];
-        let visible = |q: Pt| q.y < LEG_SPLIT_Y || !point_in_polygon(q, &keyboard);
-        let fillets = fillets(&shape, torso, fillet_r, &visible);
+        let fillets = fillets(&shape, torso, fillet_r, LEG_SPLIT_Y);
         let outline = shape.polygon(f32::MIN, 1.0);
         let bbox = outline.iter().fold((pt(f32::MAX, f32::MAX), pt(f32::MIN, f32::MIN)), |(lo, hi), q| {
             (pt(lo.x.min(q.x), lo.y.min(q.y)), pt(hi.x.max(q.x), hi.y.max(q.y)))
@@ -1298,12 +1286,12 @@ struct Legs {
 /// the silhouette ink, so the leg reads as part of the body rather than a cut-out on top.
 const CONTOUR: f32 = 1.35;
 /// Arm length of the fillet curve where a leg grows out of the silhouette.
-const FILLET_R: f32 = 13.0;
+const FILLET_R: f32 = 10.0;
 
 impl Legs {
-    fn new(pose: &Pose, skin: &Skin, rig: &Rig) -> Legs {
+    fn new(art: &Art, pose: &Pose, skin: &Skin, rig: &Rig) -> Legs {
         let sh = &skin.shape;
-        let torso = map_pts(&torso_pts(skin), |q| rig.torso.map(q));
+        let torso = map_pts(&torso_pts(art, skin), |q| rig.torso_pt(q));
         let w = 12.3 * (0.9 + 0.1 * sh.body_width);
         // Organic front-leg profile: the outer side (towards the flank) carries the shoulder,
         // the inner side tapers into the body at the armpit so it never reaches the chest fur.
@@ -1313,9 +1301,10 @@ impl Legs {
             root: w * 0.62,
         };
         let leg = Profile { outer: [16.0, 14.0, 12.0, 11.0, 10.5], inner: [12.0, 11.0, 10.0, 10.0, 9.5], root: 15.0 };
+        let (upper, lower) = rig.arm_bones();
         let (thigh, shin) = rig.leg_bones();
-        // Sock size in canvas units, the same however far the leg reaches.
-        let sock_len = sh.sock_length * rig.rest_arm_span();
+        // Shoulder-to-paw distance at rest (the bones are 2% longer than it).
+        let rest_span = (upper + lower) / 1.02;
 
         let mut items = Vec::with_capacity(4);
         let mut hind = [None, None];
@@ -1335,17 +1324,16 @@ impl Legs {
 
         let fronts = [0, 1].map(|side| {
             let s = side_sign(side);
+            let paw = pose.paws[side].pos + pt(0.0, pose.paws[side].press * 1.8);
             let joint = rig.shoulder(side);
-            let paw = within_reach(joint, pose.paws[side].pos + pt(0.0, pose.paws[side].press * 1.8), rig.arm_reach());
-            let elbow = if pose.elbows[side].is_finite() { pose.elbows[side] } else { soft_elbow(joint, paw, front_bend(s), natural_bend(joint, paw)) };
+            let elbow = if pose.elbows[side].is_finite() { pose.elbows[side] } else { solve_elbow(joint, paw, upper, lower, front_bend(s)) };
             let shape = skin_limb(rig.arm_root(side), joint, elbow, paw, &arm);
-            // Arc length of the drawn leg, shoulder to paw.
+            // The sock keeps its size in canvas units, so the white fur doesn't creep up the
+            // arm (over the orange) when the leg reaches out for the mouse.
             let first = shape.first_index_from(0.0);
             let len: f32 = (first..shape.center.len() - 1).map(|i| (shape.center[i + 1] - shape.center[i]).len()).sum();
-            let sock_from = (1.0 - sock_len / len.max(1.0)).clamp(0.08, 0.92);
-            // The inner contour only starts a little way down the leg, so the shoulder reads as
-            // one piece with the body.
-            LegDraw::new(shape, sock_from, 0.28, &torso, FILLET_R)
+            let sock_from = (1.0 - sh.sock_length * rest_span / len.max(1.0)).clamp(0.08, 0.92);
+            LegDraw::new(shape, sock_from, 0.15, &torso, FILLET_R)
         });
         // A paw reaching across to the other side of the chest is drawn in front.
         let crossing = |side: usize| (fronts[side].shape.wrist.x - DOG_X) * side_sign(side) < -4.0;
@@ -1564,8 +1552,8 @@ fn draw_legs_over_keyboard(p: &mut Painter, pose: &Pose, legs: &Legs, skin: &Ski
                 .collect::<Vec<f32>>()
         });
         // Fillet outlines are not redrawn here: the body pass drew them (fillets never start
-        // over the keyboard), and redrawing them without the body's fill on top would leave
-        // a stray line where a curve runs along the inside of the body.
+        // below the split line), and redrawing them without the body's fill on top left a
+        // stray dark tick under the mouse arm.
         fill_leg(p, legs, leg, skin, Some(Clip::Tmp), from);
         edge_bands(p, leg, skin, Some(Clip::Tmp), from, [&widths[0], &widths[1]]);
         fill_fillets(p, legs, leg, skin, Some(Clip::Tmp));
@@ -1806,6 +1794,27 @@ fn draw_particles(p: &mut Painter, pose: &Pose) {
                 p.fill(&path, rgb(0xFF, 0xD3, 0x4D).fade(fade));
                 p.stroke(&path, rgb(0xC0, 0x8A, 0x10).fade(fade), 1.0);
             }
+            ParticleKind::Question => {
+                // A bouncy "?" that pops in, wobbles and floats away.
+                let s = part.size * (0.6 + 0.4 * smoothstep(0.0, 0.15, k));
+                let rot = (part.age * 5.0).sin() * 0.22;
+                let c = part.pos;
+                let m = |x: f32, y: f32| c + pt(x * s, y * s).rotate(rot);
+                let mut pb = PathBuilder::new();
+                let (a, b1, b2, e1) = (m(-0.55, -0.55), m(-0.55, -1.3), m(0.62, -1.3), m(0.55, -0.48));
+                let (c1, c2, e2) = (m(0.5, -0.08), m(0.0, -0.06), m(0.0, 0.32));
+                pb.move_to(a.x, a.y);
+                pb.cubic_to(b1.x, b1.y, b2.x, b2.y, e1.x, e1.y);
+                pb.cubic_to(c1.x, c1.y, c2.x, c2.y, e2.x, e2.y);
+                if let Some(hook) = pb.finish() {
+                    let purple = rgb(0x8B, 0x6C, 0xF0);
+                    p.stroke(&Some(hook.clone()), WHITE.fade(fade), s * 0.34 + 3.2);
+                    p.stroke(&Some(hook), purple.fade(fade), s * 0.34);
+                    let dot = m(0.0, 0.88);
+                    p.fill(&circle(dot, s * 0.2 + 1.6), WHITE.fade(fade));
+                    p.fill(&circle(dot, s * 0.2), purple.fade(fade));
+                }
+            }
         }
     }
 }
@@ -1830,12 +1839,11 @@ fn draw_custom(p: &mut Painter, skin: &Skin, space: Space, rig: &Rig, tail: Opti
         return;
     }
     let h = rig.head;
-    let torso = rig.torso;
     let map: Box<dyn Fn(Pt) -> Pt + '_> = match space {
         Space::Head => Box::new(move |q| h.map_dome(q, 0.0)),
         Space::Skull => Box::new(move |q| h.map_flat(q, 2.0)),
         Space::Muzzle => Box::new(move |q| h.map_dome(q, 8.0)),
-        Space::Body => Box::new(move |q| torso.map(q)),
+        Space::Body => Box::new(move |q| rig.torso_pt(q)),
         Space::Tail => match tail {
             Some(g) => Box::new(move |q| g.map(q)),
             None => return,
@@ -1889,8 +1897,8 @@ mod tests {
         for skin in BUILTINS.map(|(_, f)| f()) {
             let pose = Pose::neutral();
             let rig = Rig::new(&skin.shape, &pose);
-            let legs = Legs::new(&pose, &skin, &rig);
-            let chest = map_pts(&chest_pts(&skin).unwrap(), |q| rig.body.map(q));
+            let legs = Legs::new(art::builtin(), &pose, &skin, &rig);
+            let chest = map_pts(&chest_pts(art::builtin(), &skin).unwrap(), |q| rig.body.map(q));
             for side in 0..2 {
                 assert!(point_in_polygon(rig.shoulder(side), &legs.torso), "{} shoulder {side}", skin.name);
                 let leg = &legs.items[legs.front[side]];
@@ -1923,7 +1931,7 @@ mod tests {
         for skin in BUILTINS.map(|(_, f)| f()) {
             let pose = Pose::neutral();
             let rig = Rig::new(&skin.shape, &pose);
-            let legs = Legs::new(&pose, &skin, &rig);
+            let legs = Legs::new(art::builtin(), &pose, &skin, &rig);
             for side in 0..2 {
                 let leg = &legs.items[legs.front[side]];
                 for q in leg.outline.iter().filter(|q| !rig.head_contains(**q) && q.y < LEG_SPLIT_Y) {
@@ -1943,7 +1951,7 @@ mod tests {
         let rig = Rig::new(&skin.shape, &pose);
         pose.paws[1].pos = rig.shoulder(1) + pt(50.0, -44.0);
         pose.elbows = [pt(f32::NAN, f32::NAN); 2];
-        let legs = Legs::new(&pose, &skin, &rig);
+        let legs = Legs::new(art::builtin(), &pose, &skin, &rig);
         let raised = &legs.items[legs.front[1]];
         assert!(raised.fillets.len() == 2, "raised arm should blend on both sides: {}", raised.fillets.len());
         for f in &raised.fillets {
@@ -1965,6 +1973,23 @@ mod tests {
                 // Corners stay transparent so clicks pass through.
                 assert_eq!(pm.pixel(0, 0).unwrap().alpha(), 0);
                 assert_eq!(pm.pixel(pm.width() - 1, 0).unwrap().alpha(), 0);
+            }
+        }
+    }
+
+    /// Heads turned fully left and right (the art's 2.5D turn keyframes) render cleanly for
+    /// every dog.
+    #[test]
+    fn turned_heads_render() {
+        for skin in BUILTINS.map(|(_, f)| f()) {
+            for yaw in [-TURN_YAW, TURN_YAW] {
+                let pose = Pose { head_yaw: yaw, ..Pose::neutral() };
+                let mut r = Renderer::new(1.0);
+                let pm = r.render(&pose, &skin, &RenderOptions::default());
+                let c = Rig::new(&skin.shape, &pose).head.center;
+                assert_eq!(pm.pixel(c.x as u32, c.y as u32).unwrap().alpha(), 255, "{} yaw {yaw}", skin.name);
+                let filled = opaque_pixels(pm) as f32 / (pm.width() * pm.height()) as f32;
+                assert!(filled > 0.15 && filled < 0.7, "{} yaw {yaw}: {filled}", skin.name);
             }
         }
     }
@@ -2002,24 +2027,11 @@ mod tests {
         let text = "format_version = 1\nname = \"Shiba-ish\"\n[palette]\nbody = \"#E07E3C\"\n\
                     [shape]\ntail_style = \"curl\"\nface = \"urajiro\"\nchest = \"bib\"\nbrows = true\n";
         let skin = parse_skin(text).unwrap();
-        assert!(chest_pts(&skin).is_some());
+        assert!(chest_pts(art::builtin(), &skin).is_some());
         let mut r = Renderer::new(1.0);
         let pm = r.render(&Pose::neutral(), &skin, &RenderOptions::default());
         let filled = opaque_pixels(pm) as f32 / (pm.width() * pm.height()) as f32;
         assert!(filled > 0.15 && filled < 0.7, "{filled}");
-    }
-
-    /// The variants really look different: their coats are far apart in colour.
-    #[test]
-    fn corgi_variants_have_distinct_coats() {
-        let coats: Vec<_> = BUILTINS.iter().map(|(_, f)| f().palette.body).collect();
-        for i in 0..coats.len() {
-            for j in i + 1..coats.len() {
-                let (a, b) = (coats[i], coats[j]);
-                let d = (a.r as i32 - b.r as i32).abs() + (a.g as i32 - b.g as i32).abs() + (a.b as i32 - b.b as i32).abs();
-                assert!(d > 120, "coats {i} and {j} are too similar");
-            }
-        }
     }
 
     #[test]
@@ -2032,3 +2044,5 @@ mod tests {
         }
     }
 }
+
+

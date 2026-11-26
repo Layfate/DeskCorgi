@@ -5,12 +5,12 @@ use std::time::Instant;
 
 use deskcorgi_core::geom::pt;
 use deskcorgi_core::keymap::key;
-use deskcorgi_core::skin::{corgi, corgi_merle, corgi_tricolor};
+use deskcorgi_core::skin::corgi;
 use deskcorgi_core::{FrameInput, InputEvent, MoodConfig, Pet, RenderOptions, Renderer};
 
 fn main() {
     let scale: f32 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(1.275);
-    for skin in [corgi(), corgi_tricolor(), corgi_merle()] {
+    for skin in [corgi()] {
         let mut pet = Pet::new(1);
         let mut r = Renderer::new(scale);
         let opts = RenderOptions { scale, ..Default::default() };

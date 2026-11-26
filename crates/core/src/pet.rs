@@ -3,12 +3,14 @@
 
 use std::f32::consts::PI;
 
-use crate::geom::{pt, Pt, Rng};
+use crate::geom::{pt, smoothstep, Pt, Rng};
 use crate::input::{wpm, InputEvent, MouseButton, RateCounter};
 use crate::keymap::{KeyId, KEY_COUNT};
 use crate::rig::Rig;
-use crate::scene::{key_center, paw_rest, preferred_side, side_sign, MOUSE_REST, MOUSE_SIDE, SEAT, WAVE_SIDE};
-use crate::skin::{Skin, TailStyle};
+use crate::scene::{
+    clamp_mouse, key_center, mouse_spot, paw_rest, preferred_side, side_sign, MOUSE_REST, MOUSE_SIDE, SEAT, WAVE_SIDE,
+};
+use crate::skin::Skin;
 use crate::spring::{Spring, Spring2, MAX_DT};
 use crate::state::{Mood, MoodConfig, MoodMachine, Signals};
 
@@ -31,6 +33,8 @@ pub enum ParticleKind {
     Heart,
     Zzz,
     Star,
+    /// The "?" of a puzzled head tilt.
+    Question,
 }
 
 /// A key the user just pressed, popping up from the dog's keyboard as a little keycap and
@@ -93,7 +97,8 @@ pub struct Pose {
     pub body_lean: f32,
     pub body_tilt: f32,
     pub body_squash: f32,
-    pub hip_sway: f32,
+    /// Breathing, added to `body_squash` for the body but not for the front legs.
+    pub body_breath: f32,
     pub head_yaw: f32,
     pub head_pitch: f32,
     pub head_tilt: f32,
@@ -106,9 +111,11 @@ pub struct Pose {
     pub gaze: Pt,
     pub pupil: f32,
     pub sparkle: f32,
-    /// 0..1: the focused "in the zone" face while typing fast (slanted lids, 💢 mark).
+    /// 0..1: the focused "in the zone" face while typing fast (slanted lids, ðŸ’¢ mark).
     pub focus: f32,
     pub mouth_open: f32,
+    /// A big sleepy yawn (0..1): the mouth opens into a round "O".
+    pub yawn: f32,
     pub tongue: f32,
     pub blush: f32,
     pub tail_wag: f32,
@@ -137,7 +144,7 @@ impl Pose {
             body_lean: 0.0,
             body_tilt: 0.0,
             body_squash: 1.0,
-            hip_sway: 0.0,
+            body_breath: 0.0,
             head_yaw: 0.0,
             head_pitch: 0.0,
             head_tilt: 0.0,
@@ -152,6 +159,7 @@ impl Pose {
             sparkle: 0.0,
             focus: 0.0,
             mouth_open: 0.0,
+            yawn: 0.0,
             tongue: 0.0,
             blush: 0.35,
             tail_wag: 0.0,
@@ -176,6 +184,9 @@ impl Pose {
 pub struct FrameInput {
     /// Cursor position in canvas units (may be far outside the canvas).
     pub cursor: Option<Pt>,
+    /// Cursor position on the monitor it is on, from (0, 0) top-left to (1, 1) bottom-right.
+    /// The dog's mouse follows it around the pad.
+    pub cursor_screen: Option<Pt>,
     /// The user is dragging the dog around.
     pub dragging: bool,
     /// Drag velocity in canvas units per second.
@@ -183,8 +194,26 @@ pub struct FrameInput {
 }
 
 const MAX_HELD: usize = 16;
+/// How long a yawn takes.
+const YAWN_TIME: f64 = 2.2;
+/// Backspace presses within `HUH_WINDOW` seconds that make the dog tilt its head, puzzled.
+const HUH_PRESSES: usize = 3;
+const HUH_WINDOW: f64 = 1.6;
+const HUH_TIME: f64 = 1.7;
+
+/// 0 → 1 → 0 over a yawn: opens up, holds wide for a moment, closes.
+fn yawn_curve(u: f32) -> f32 {
+    if !(0.0..1.0).contains(&u) {
+        return 0.0;
+    }
+    smoothstep(0.0, 0.32, u) * (1.0 - smoothstep(0.72, 1.0, u))
+}
+/// Canvas units the dog's mouse moves per raw mouse count, when only raw motion is known (a
+/// game holding the cursor still, or the cursor stuck at a screen edge).
+const MOUSE_RAW_GAIN: f32 = 0.025;
+/// Where the paw holds the mouse, relative to the mouse's centre.
+const MOUSE_GRIP: Pt = pt(2.0, -10.0);
 const MAX_PARTICLES: usize = 48;
-const MOUSE_PAW_HOLD: f64 = 1.6;
 /// A key must be held this long before a back paw comes up for it. Normal fast typing
 /// overlaps keys for a few dozen milliseconds; that must not summon extra paws.
 pub const HIND_PAW_DELAY: f64 = 0.2;
@@ -203,6 +232,7 @@ pub struct Pet {
     key_presses: RateCounter,
     clicks: RateCounter,
     key_pressed_frame: bool,
+    backspaces: RateCounter,
     mouse_events: bool,
     raw_mouse: Pt,
     buttons: [bool; 3],
@@ -252,6 +282,10 @@ pub struct Pet {
     wag_phase: f32,
     mouse_off: Spring2,
     mouse_target: Pt,
+    prev_screen: Option<Pt>,
+    last_cursor_move: f64,
+    /// 1 while the mouse paw holds the mouse: the paw is then glued to it exactly.
+    grip: Spring,
     mouse_btn: [Spring; 2],
 
     next_blink: f64,
@@ -264,6 +298,12 @@ pub struct Pet {
     blep_until: f64,
     next_heart: f64,
     next_z: f64,
+    yawn_start: f64,
+    next_yawn: f64,
+    pre_sleep_yawned: bool,
+    huh_until: f64,
+    huh_ready: f64,
+    huh_dir: f32,
     next_hop: f64,
     hops_left: u8,
     breath_phase: f32,
@@ -287,6 +327,7 @@ impl Pet {
             key_presses: RateCounter::default(),
             clicks: RateCounter::default(),
             key_pressed_frame: false,
+            backspaces: RateCounter::default(),
             mouse_events: false,
             raw_mouse: Pt::ZERO,
             buttons: [false; 3],
@@ -332,8 +373,12 @@ impl Pet {
             wag_speed: Spring::new(2.6, 40.0, 12.0),
             wag_amp: Spring::new(0.16, 40.0, 12.0),
             wag_phase: 0.0,
-            mouse_off: Spring2::new(Pt::ZERO, 300.0, 30.0),
+            // Stiff and critically damped: tracks the cursor closely, never overshoots.
+            mouse_off: Spring2::new(Pt::ZERO, 900.0, 60.0),
             mouse_target: Pt::ZERO,
+            prev_screen: None,
+            last_cursor_move: f64::NEG_INFINITY,
+            grip: Spring::new(0.0, 900.0, 60.0),
             mouse_btn: [Spring::new(0.0, 1200.0, 50.0); 2],
             next_blink: 1.5,
             blink_start: f64::NEG_INFINITY,
@@ -345,6 +390,12 @@ impl Pet {
             blep_until: f64::NEG_INFINITY,
             next_heart: 0.0,
             next_z: 0.0,
+            yawn_start: f64::NEG_INFINITY,
+            next_yawn: 30.0,
+            pre_sleep_yawned: false,
+            huh_until: f64::NEG_INFINITY,
+            huh_ready: 0.0,
+            huh_dir: 1.0,
             next_hop: 0.0,
             hops_left: 0,
             breath_phase: 0.0,
@@ -378,6 +429,8 @@ impl Pet {
             || !self.popups.is_empty()
             || !matches!(self.mood.mood, Mood::Idle | Mood::Sleep)
             || !self.lift.is_settled()
+            || self.now - self.yawn_start < YAWN_TIME
+            || self.now < self.huh_until
     }
 
     pub fn rig(&self, skin: &Skin) -> Rig {
@@ -414,6 +467,10 @@ impl Pet {
                 }
                 self.held.push(k);
                 self.key_presses.push(self.now);
+                if k == crate::keymap::key(0, 13) {
+                    // Backspace
+                    self.backspaces.push(self.now);
+                }
                 self.key_pressed_frame = true;
                 self.key_down_at[i] = self.now;
                 self.last_key_down = self.now;
@@ -557,7 +614,14 @@ impl Pet {
         self.prev_cursor = input.cursor.filter(|c| c.is_finite());
         stroke += std::mem::take(&mut self.boops);
         let raw = std::mem::take(&mut self.raw_mouse);
-        let mouse_active = cursor_moved || raw.len() > 0.5 || self.mouse_events;
+        let screen = input.cursor_screen.filter(|s| s.is_finite());
+        let screen_moved = match (screen, self.prev_screen) {
+            (Some(a), Some(b)) => (a - b).len() > 1e-5,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        self.prev_screen = screen;
+        let mouse_active = cursor_moved || screen_moved || raw.len() > 0.5 || self.mouse_events;
         if mouse_active {
             self.last_mouse = now;
         }
@@ -575,11 +639,74 @@ impl Pet {
         self.key_pressed_frame = false;
         self.mouse_events = false;
 
+        // ---- mouse on its pad ----------------------------------------------------------
+        // The mouse sits where the cursor is on its screen, so it moves exactly as much as
+        // the real one. When only raw motion arrives (a game holds the cursor still, or the
+        // cursor is pinned at a screen edge), it is moved by that motion instead and slides
+        // back to the cursor's spot once the motion stops.
+        let home = screen.map(mouse_spot).unwrap_or(Pt::ZERO);
+        if screen_moved {
+            self.mouse_target = home;
+            self.last_cursor_move = now;
+        } else {
+            if raw.len() > 0.5 && now - self.last_cursor_move > 0.1 {
+                self.mouse_target = clamp_mouse(self.mouse_target + raw * MOUSE_RAW_GAIN);
+            }
+            self.mouse_target = home + (self.mouse_target - home) * (-dt * 1.2).exp();
+        }
+        self.mouse_off.set_target(self.mouse_target);
+        for i in 0..2 {
+            self.mouse_btn[i].target = if self.buttons[i] { 1.0 } else { 0.0 };
+        }
+
         let prev = self.mood.mood;
         let mood = self.mood.update(now, dt, &signals, cfg);
         if mood != prev {
             self.on_enter(mood, prev, &rig);
         }
+
+        // ---- yawning -------------------------------------------------------------------
+        // Every so often while idle, and once just before dozing off, a big sleepy yawn.
+        // Any input (a mood other than idle) cuts it short.
+        let idle_for = self.seconds_since_input();
+        if mood != Mood::Idle || !cfg.yawn {
+            self.yawn_start = f64::NEG_INFINITY;
+        }
+        if idle_for < 1.0 {
+            self.pre_sleep_yawned = false;
+        }
+        if cfg.yawn && mood == Mood::Idle && now - self.yawn_start >= YAWN_TIME {
+            let pre_sleep = cfg.sleep && !self.pre_sleep_yawned && idle_for >= cfg.sleep_after - 3.0;
+            if pre_sleep || (idle_for > 15.0 && now >= self.next_yawn) {
+                self.yawn_start = now;
+                self.pre_sleep_yawned |= pre_sleep;
+                self.next_yawn = now + self.rng.range(40.0, 80.0) as f64;
+            }
+        }
+        let yawn = yawn_curve(((now - self.yawn_start) / YAWN_TIME) as f32);
+
+        // ---- "huh?" ----------------------------------------------------------------------
+        // A few quick Backspaces: the dog tilts its head, puzzled, and a "?" pops up.
+        let calm = matches!(mood, Mood::Idle | Mood::Typing | Mood::Excited);
+        if cfg.huh && calm && now >= self.huh_ready && self.backspaces.count_since(now - HUH_WINDOW) >= HUH_PRESSES {
+            self.huh_until = now + HUH_TIME;
+            self.huh_ready = now + HUH_TIME + 3.0;
+            self.huh_dir = if self.rng.f32() < 0.5 { -1.0 } else { 1.0 };
+            let side = self.huh_dir;
+            let at = rig.head.center + pt(side * 94.0, -14.0);
+            self.spawn(ParticleKind::Question, at, pt(side * 5.0, -15.0), 1.6, 13.0);
+            let ear = if side < 0.0 { 0 } else { 1 };
+            self.twitch[ear].kick(6.0);
+        }
+        if !calm || !cfg.huh {
+            self.huh_until = self.huh_until.min(now);
+        }
+        let huh = if now < self.huh_until {
+            let u = ((self.huh_until - now) / HUH_TIME) as f32;
+            smoothstep(0.0, 0.25, u) * smoothstep(1.0, 0.85, u)
+        } else {
+            0.0
+        };
 
         // ---- head look -----------------------------------------------------------------
         let head_c = rig.head.center;
@@ -613,8 +740,9 @@ impl Pet {
             }
             _ => {}
         }
-        self.yaw.target = yaw_t;
-        self.pitch.target = pitch_t;
+        self.yaw.target = yaw_t * (1.0 - 0.6 * huh);
+        // A yawn tips the head back; a puzzled tilt looks straight at you.
+        self.pitch.target = pitch_t - 0.16 * yawn;
         self.gaze.set_target(gaze_t);
 
         if mood == Mood::Idle && now >= self.next_curious {
@@ -629,7 +757,7 @@ impl Pet {
             Mood::Scruff => (drag_v.x * 0.0004).clamp(-0.2, 0.2),
             Mood::Zoomies => 0.12 * (t * 9.0).sin(),
             _ => 0.0,
-        };
+        } + 0.3 * self.huh_dir * huh;
         self.drop.target = match mood {
             Mood::Sleep => 18.0,
             Mood::Chase => 6.0,
@@ -638,14 +766,15 @@ impl Pet {
         };
 
         // ---- paws ----------------------------------------------------------------------
-        // The mouse paw stays on the mouse only while the mouse was used more recently than
-        // the keyboard; as soon as you type, both front paws go back to the keys.
-        let mousing = now - self.last_mouse < MOUSE_PAW_HOLD
-            && self.last_mouse > self.last_key_down
-            && matches!(mood, Mood::Idle | Mood::Typing | Mood::Excited | Mood::Chase);
+        // Once the mouse is used, the mouse paw stays resting on it (it doesn't hop back to the
+        // keys after a pause); as soon as you type, both front paws go back to the keys.
+        let mousing = self.last_mouse > self.last_key_down
+            && matches!(mood, Mood::Idle | Mood::Typing | Mood::Excited | Mood::Chase | Mood::Pat);
         let waving = now < self.wave_until && matches!(mood, Mood::Idle | Mood::Typing | Mood::Excited);
         let (front, hind) = self.assign_keys(mousing, waving, now);
-        let mouse_pos = MOUSE_REST + self.mouse_off.value();
+        // The paw heads for where the mouse is going; once it holds the mouse it is glued to it.
+        let mouse_pos = MOUSE_REST + self.mouse_target;
+        let mut holding_mouse = false;
         let swing = pt((-drag_v.x * 0.03).clamp(-16.0, 16.0), (-drag_v.y * 0.02).clamp(-10.0, 10.0));
         let mut targets = [(Pt::ZERO, 0.0f32); 2];
         // Whether each paw is pinned to something (a key or the mouse) rather than hovering.
@@ -674,7 +803,8 @@ impl Pet {
                     if side == MOUSE_SIDE && mousing {
                         let b = self.mouse_btn[0].value.max(self.mouse_btn[1].value);
                         pinned[side] = true;
-                        (mouse_pos + pt(-side_sign(MOUSE_SIDE) * 2.0, -10.0), b)
+                        holding_mouse = true;
+                        (mouse_pos + MOUSE_GRIP, b)
                     } else if let Some(k) = front[side] {
                         pinned[side] = true;
                         (key_center(k) + pt(0.0, -2.0), 1.0)
@@ -685,8 +815,6 @@ impl Pet {
                     }
                 }
             };
-            // Never further than the leg is long: legs bend, they don't stretch.
-            let target = crate::limb::within_reach(rig.shoulder(side), target, rig.arm_reach() * 0.97);
             targets[side] = (target, press);
 
             let hind_key = if matches!(mood, Mood::Scruff | Mood::Zoomies | Mood::Sleep) { None } else { hind[side] };
@@ -710,30 +838,22 @@ impl Pet {
             self.press[side].target = targets[side].1;
         }
 
-        // ---- mouse on its pad (mirrored: it faces the dog) --------------------------------
-        let mt = self.mouse_target - raw * 0.045;
-        self.mouse_target = pt(mt.x.clamp(-12.0, 12.0), mt.y.clamp(-7.0, 7.0)) * (-dt * 2.2).exp();
-        self.mouse_off.set_target(self.mouse_target);
-        for i in 0..2 {
-            self.mouse_btn[i].target = if self.buttons[i] { 1.0 } else { 0.0 };
-        }
+        self.grip.target = if holding_mouse { 1.0 } else { 0.0 };
 
         // ---- body ----------------------------------------------------------------------
-        let cursor_side = input.cursor.map(|c| soft_sat((c.x - head_c.x) / 200.0)).unwrap_or(0.0);
         self.lean.target = match mood {
-            Mood::Chase => cursor_side * 6.0,
+            // No lean towards the cursor or the mouse: the body (and with it both arms) stays
+            // still while the mouse is used. The head and eyes follow the cursor instead.
             Mood::Scruff => (-drag_v.x * 0.01).clamp(-6.0, 6.0),
-            _ if mousing => side_sign(MOUSE_SIDE) * 10.0,
             _ => 0.0,
         };
         self.tilt.target = match mood {
             Mood::Scruff => (drag_v.x * 0.00025).clamp(-0.15, 0.15),
-            Mood::Chase => cursor_side * 0.04,
-            _ if mousing => side_sign(MOUSE_SIDE) * 0.05,
             _ => 0.0,
         };
         self.lift.target = if mood == Mood::Scruff { -18.0 } else { 0.0 };
-        self.squash.target = if mood == Mood::Scruff { 1.07 } else { 1.0 };
+        // A yawn stretches the dog a little taller.
+        self.squash.target = if mood == Mood::Scruff { 1.07 } else { 1.0 + 0.05 * yawn };
         if mood == Mood::Zoomies && self.hops_left > 0 && now >= self.next_hop {
             self.lift.kick(-300.0);
             self.squash.kick(1.6);
@@ -745,13 +865,15 @@ impl Pet {
         self.perk.target = match mood {
             Mood::Excited | Mood::Chase | Mood::Scruff | Mood::Zoomies => 1.0,
             Mood::Typing => 0.35,
-            _ => 0.0,
-        };
+            _ => 0.0f32,
+        }
+        .max(0.7 * huh);
         self.fold.target = match mood {
             Mood::Pat => 0.85,
             Mood::Sleep => 0.5,
-            _ => 0.0,
-        };
+            _ => 0.0f32,
+        }
+        .max(0.45 * yawn);
         if matches!(mood, Mood::Idle | Mood::Typing) && now >= self.next_twitch {
             let side = (self.rng.next_u32() % 2) as usize;
             let kick = self.rng.range(4.0, 7.0);
@@ -773,7 +895,8 @@ impl Pet {
             // Typing fast: concentrating, pupils a little tighter.
             Mood::Excited => 0.9,
             Mood::Scruff => 0.92,
-            _ => 1.0,
+            // Puzzled: big round curious eyes.
+            _ => 1.0 + 0.22 * huh,
         };
         self.sparkle.target = if matches!(mood, Mood::Chase | Mood::Zoomies) { 1.0 } else { 0.0 };
         self.focus.target = if mood == Mood::Excited { 1.0 } else { 0.0 };
@@ -820,23 +943,27 @@ impl Pet {
         for s in self.paw.iter_mut().chain(self.hind.iter_mut()) {
             s.step(dt);
         }
+        self.mouse_off.step(dt);
+        self.grip.step(dt);
+        // The paw holding the mouse rides on it, so the two move as one.
+        let grip_pt = MOUSE_REST + self.mouse_off.value() + MOUSE_GRIP;
+        let grip = self.grip.value.clamp(0.0, 1.0);
+        let paws = [0, 1].map(|side| {
+            let p = self.paw[side].value();
+            if side == MOUSE_SIDE {
+                p.lerp(grip_pt, grip)
+            } else {
+                p
+            }
+        });
         // Inverse kinematics: elbows and knees follow the paws. A stiff spring on top smooths
         // the rare moment where the bend flips sides, so limbs never snap.
+        let (upper, lower) = rig.arm_bones();
         let (thigh, shin) = rig.leg_bones();
         for side in 0..2 {
             let s = side_sign(side);
-            let waving_paw = waving && side == WAVE_SIDE;
-            let prefer = if waving_paw { pt(s * 0.6, 1.0) } else { crate::limb::front_bend(s) };
-            // A raised paw (waving, zoomies) bends clearly at the elbow; a paw on the keys
-            // only softly.
-            let bend = match mood {
-                _ if waving_paw => 0.2,
-                Mood::Zoomies => 0.16,
-                Mood::Scruff => 0.04,
-                _ => crate::limb::natural_bend(rig.shoulder(side), self.paw[side].value()),
-            };
-            let paw = crate::limb::within_reach(rig.shoulder(side), self.paw[side].value(), rig.arm_reach());
-            let elbow = crate::limb::soft_elbow(rig.shoulder(side), paw, prefer, bend);
+            let prefer = if waving && side == WAVE_SIDE { pt(s * 0.6, 1.0) } else { crate::limb::front_bend(s) };
+            let elbow = crate::limb::solve_elbow(rig.shoulder(side), paws[side], upper, lower, prefer);
             let hip = rig.hip(side);
             let foot = hip.lerp(self.hind[side].value(), self.hind_up[side].value.clamp(0.0, 1.0));
             let knee = crate::limb::solve_elbow(hip, foot, thigh, shin, pt(s, 0.2));
@@ -852,7 +979,6 @@ impl Pet {
         }
         self.joints_ready = true;
         self.gaze.step(dt);
-        self.mouse_off.step(dt);
         let paired = self
             .press
             .iter_mut()
@@ -931,18 +1057,14 @@ impl Pet {
         let blink_open = if (0.0..1.0).contains(&blink_t) { 1.0 - (PI * blink_t).sin() } else { 1.0 };
         let breath = self.breath_phase.sin() * if sleeping { 0.022 } else { 0.012 };
         let wag = self.wag_phase.sin() * self.wag_amp.value;
-        let sway = match skin.shape.tail_style {
-            TailStyle::Stub => wag * 9.0,
-            _ => wag * 2.0,
-        };
         let p = &mut self.pose;
         p.time = t;
         p.mood = mood;
         p.body_lift = self.lift.value;
         p.body_lean = self.lean.value;
         p.body_tilt = self.tilt.value;
-        p.body_squash = self.squash.value + breath;
-        p.hip_sway = sway;
+        p.body_squash = self.squash.value;
+        p.body_breath = breath;
         p.head_yaw = self.yaw.value;
         p.head_pitch = self.pitch.value;
         p.head_tilt = self.head_tilt.value;
@@ -950,7 +1072,9 @@ impl Pet {
         p.ear_perk = self.perk.value;
         p.ear_fold = self.fold.value;
         p.ear_twitch = [self.twitch[0].value * 0.04, self.twitch[1].value * 0.04];
-        p.eye_open = (blink_open * (1.0 - self.sleepy.value)).clamp(0.0, 1.0);
+        // Eyes squeeze shut through the widest part of a yawn.
+        p.eye_open = (blink_open * (1.0 - self.sleepy.value) * (1.0 - smoothstep(0.35, 0.8, yawn))).clamp(0.0, 1.0);
+        p.yawn = yawn;
         p.eye_happy = self.happy.value.clamp(0.0, 1.0);
         p.gaze = self.gaze.value();
         p.pupil = self.pupil.value;
@@ -961,7 +1085,7 @@ impl Pet {
         p.blush = self.blush.value.clamp(0.0, 1.0);
         p.tail_wag = wag;
         for side in 0..2 {
-            p.paws[side] = PawPose { pos: self.paw[side].value(), press: self.press[side].value.clamp(0.0, 1.2) };
+            p.paws[side] = PawPose { pos: paws[side], press:self.press[side].value.clamp(0.0, 1.2) };
             p.hind[side] = HindPose { pos: self.hind[side].value(), up: self.hind_up[side].value.clamp(0.0, 1.1) };
             p.elbows[side] = self.elbow[side].value();
             p.knees[side] = self.knee[side].value();
@@ -983,7 +1107,7 @@ impl Pet {
 mod tests {
     use super::*;
     use crate::keymap::key;
-    use crate::skin::{corgi, corgi_merle, corgi_tricolor};
+    use crate::skin::corgi;
 
     fn step(pet: &mut Pet, skin: &Skin, secs: f32, input: FrameInput) {
         let n = (secs * 30.0).round().max(1.0) as usize;
@@ -1011,7 +1135,7 @@ mod tests {
 
     #[test]
     fn third_held_key_raises_a_back_paw() {
-        let skin = corgi_tricolor();
+        let skin = corgi();
         let mut pet = Pet::new(2);
         for k in [key(2, 1), key(2, 2), key(2, 3)] {
             pet.handle(InputEvent::KeyDown(k));
@@ -1091,7 +1215,7 @@ mod tests {
 
     #[test]
     fn sleeps_and_stays_finite_for_a_long_time() {
-        let skin = corgi_merle();
+        let skin = corgi();
         let mut pet = Pet::new(5);
         let cfg = MoodConfig { sleep_after: 5.0, ..Default::default() };
         for _ in 0..(30 * 20) {
@@ -1178,7 +1302,125 @@ mod tests {
         let mouse = MOUSE_REST + pet.pose().mouse_offset;
         assert!(mouse.x < crate::scene::DOG_X, "the mouse is on the viewer's left");
         assert!((paw - mouse).len() < 16.0, "{paw:?} vs {mouse:?}");
-        // The mouse faces the dog, so moving right moves it to the viewer's left.
-        assert!(pet.pose().mouse_offset.x < -3.0);
     }
+
+    /// Where the mouse and the mouse paw are after holding the cursor at `screen` for a moment.
+    fn mouse_at(pet: &mut Pet, skin: &Skin, screen: Pt) -> (Pt, Pt, Pt) {
+        let input = FrameInput { cursor_screen: Some(screen), ..Default::default() };
+        // Wiggle the cursor a hair so the paw goes to the mouse, then hold still.
+        let nudge = FrameInput { cursor_screen: Some(screen + pt(1e-3, 0.0)), ..Default::default() };
+        step(pet, skin, 1.0 / 30.0, nudge);
+        step(pet, skin, 0.6, input);
+        let p = pet.pose();
+        (MOUSE_REST + p.mouse_offset, p.paws[MOUSE_SIDE].pos, p.elbows[MOUSE_SIDE])
+    }
+
+    #[test]
+    fn mouse_follows_the_cursor_and_the_arm_follows_the_mouse() {
+        let skin = corgi();
+        let mut pet = Pet::new(7);
+        let (mid, mid_paw, mid_elbow) = mouse_at(&mut pet, &skin, pt(0.5, 0.5));
+        assert!((mid - MOUSE_REST).len() < 0.1, "{mid:?}");
+        // The paw holds the mouse exactly.
+        assert!((mid_paw - (mid + MOUSE_GRIP)).len() < 0.1, "{mid_paw:?} vs {mid:?}");
+
+        // Cursor to the right of the screen: the mouse (and the paw on it) goes right.
+        let (right, right_paw, right_elbow) = mouse_at(&mut pet, &skin, pt(1.0, 0.5));
+        assert!(right.x - mid.x > 15.0, "{right:?}");
+        assert!((right_paw - (right + MOUSE_GRIP)).len() < 0.1);
+        assert!((right_elbow - mid_elbow).len() > 1.0, "the arm moves with the paw");
+        // Left and up.
+        let (left, ..) = mouse_at(&mut pet, &skin, pt(0.0, 0.0));
+        assert!(mid.x - left.x > 15.0 && mid.y - left.y > 5.0, "{left:?}");
+        // It never leaves its pad.
+        for p in [right, left] {
+            assert!((p.x - crate::scene::PAD_CENTER.x).abs() + 13.5 <= crate::scene::PAD_W / 2.0);
+        }
+
+        // Moving the cursor tracks closely: a short time later the mouse is nearly there.
+        let input = FrameInput { cursor_screen: Some(pt(0.75, 0.5)), ..Default::default() };
+        step(&mut pet, &skin, 0.15, input);
+        let m = MOUSE_REST + pet.pose().mouse_offset;
+        let want = MOUSE_REST + mouse_spot(pt(0.75, 0.5));
+        assert!((m - want).len() < 1.5, "{m:?} vs {want:?}");
+    }
+
+    #[test]
+    fn raw_motion_moves_the_mouse_when_the_cursor_is_held_still() {
+        // A game locks the cursor in the middle of the screen; only raw motion arrives.
+        let skin = corgi();
+        let mut pet = Pet::new(8);
+        let input = FrameInput { cursor_screen: Some(pt(0.5, 0.5)), ..Default::default() };
+        step(&mut pet, &skin, 0.5, input);
+        for _ in 0..10 {
+            pet.handle(InputEvent::MouseMove { dx: 40.0, dy: 0.0 });
+            step(&mut pet, &skin, 1.0 / 30.0, input);
+        }
+        assert!(pet.pose().mouse_offset.x > 4.0, "{:?}", pet.pose().mouse_offset);
+        // Then it slides back to the middle.
+        step(&mut pet, &skin, 5.0, input);
+        assert!(pet.pose().mouse_offset.len() < 0.5, "{:?}", pet.pose().mouse_offset);
+    }
+    fn run_cfg(pet: &mut Pet, skin: &Skin, secs: f32, cfg: &MoodConfig, mut each: impl FnMut(&Pose)) {
+        for _ in 0..(secs * 30.0).round() as usize {
+            pet.update(1.0 / 30.0, &FrameInput::default(), skin, cfg);
+            each(pet.pose());
+        }
+    }
+
+    #[test]
+    fn yawns_before_a_nap() {
+        let skin = corgi();
+        let cfg = MoodConfig { sleep_after: 12.0, ..Default::default() };
+        let mut pet = Pet::new(11);
+        let (mut peak, mut shut) = (0.0f32, false);
+        run_cfg(&mut pet, &skin, 11.5, &cfg, |p| {
+            peak = peak.max(p.yawn);
+            shut |= p.yawn > 0.9 && p.eye_open < 0.22;
+        });
+        assert!(peak > 0.95, "no yawn before the nap: {peak}");
+        assert!(shut, "the eyes squeeze shut during a yawn");
+        // Off in the menu: no yawning at all.
+        let cfg = MoodConfig { yawn: false, ..cfg };
+        let mut pet = Pet::new(11);
+        run_cfg(&mut pet, &skin, 11.5, &cfg, |p| assert!(p.yawn == 0.0));
+    }
+
+    #[test]
+    fn typing_stops_a_yawn() {
+        let skin = corgi();
+        let cfg = MoodConfig { sleep_after: 12.0, ..Default::default() };
+        let mut pet = Pet::new(12);
+        run_cfg(&mut pet, &skin, 9.6, &cfg, |_| {});
+        assert!(pet.pose().yawn > 0.0, "{}", pet.pose().yawn);
+        pet.handle(InputEvent::KeyDown(key(2, 3)));
+        run_cfg(&mut pet, &skin, 0.1, &cfg, |_| {});
+        assert_eq!(pet.pose().yawn, 0.0);
+    }
+
+    #[test]
+    fn backspace_spam_gets_a_puzzled_head_tilt() {
+        let skin = corgi();
+        let backspace = key(0, 13);
+        for (huh, presses) in [(true, 3), (true, 1), (false, 3)] {
+            let cfg = MoodConfig { huh, ..Default::default() };
+            let mut pet = Pet::new(13);
+            run_cfg(&mut pet, &skin, 0.5, &cfg, |_| {});
+            for _ in 0..presses {
+                pet.handle(InputEvent::KeyDown(backspace));
+                run_cfg(&mut pet, &skin, 0.1, &cfg, |_| {});
+                pet.handle(InputEvent::KeyUp(backspace));
+                run_cfg(&mut pet, &skin, 0.1, &cfg, |_| {});
+            }
+            let (mut tilt, mut question) = (0.0f32, false);
+            run_cfg(&mut pet, &skin, 0.8, &cfg, |p| {
+                tilt = tilt.max(p.head_tilt.abs());
+                question |= p.particles.iter().any(|q| q.kind == ParticleKind::Question);
+            });
+            let expect = huh && presses >= HUH_PRESSES;
+            assert_eq!(question, expect, "huh={huh} presses={presses}");
+            assert_eq!(tilt > 0.2, expect, "huh={huh} presses={presses} tilt={tilt}");
+        }
+    }
+
 }

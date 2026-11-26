@@ -33,11 +33,15 @@ pub struct MoodConfig {
     pub zoomies: bool,
     pub sleep: bool,
     pub sleep_after: f64,
+    /// Yawns now and then while idle, and just before a nap.
+    pub yawn: bool,
+    /// Tilts its head, puzzled, at a few quick Backspaces.
+    pub huh: bool,
 }
 
 impl Default for MoodConfig {
     fn default() -> Self {
-        MoodConfig { chase: true, zoomies: true, sleep: true, sleep_after: crate::config::SLEEP_AFTER_SECS }
+        MoodConfig { chase: true, zoomies: true, sleep: true, sleep_after: crate::config::SLEEP_AFTER_SECS, yawn: true, huh: true }
     }
 }
 

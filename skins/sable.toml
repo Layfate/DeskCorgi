@@ -1,0 +1,56 @@
+# DeskCorgi skin. Every value is optional except format_version, name and palette.body.
+format_version = 1
+name = "Sable Corgi"
+author = "DeskCorgi"
+
+[palette]
+body = "#C96E37"
+body_shade = "#E29352"
+belly = "#FFF8EE"
+legs = "#C96E37"
+paws = "#FFF8EE"
+pads = "#F29CA3"
+ear_outer = "#A85A2E"
+ear_inner = "#F6C2B2"
+nose = "#2E1F1A"
+mouth = "#4A2B22"
+tongue = "#FF869E"
+tail = "#C96E37"
+tail_tip = "#FFF8EE"
+outline = "#4E2A17"
+blush = "#FF8F8F"
+markings = "#8E4C27"
+
+[shape]
+body_width = 1.16  # 0.85 to 1.35
+leg_length = 0.6  # 0.5 to 1.2
+head_scale = 1.14  # 0.85 to 1.2
+muzzle_length = 0.85  # 0.6 to 1.4
+ear_size = 1.08  # 0.6 to 1.5
+ear_spread = 0.45  # -0.2 to 0.8
+ear_pointiness = 0.58  # 0.5 to 1.5
+eye_size = 1.4  # 0.7 to 1.4
+eye_lid = 0.0  # 0.0 to 0.5
+eye_slant = 0.0  # -0.3 to 0.3
+cheek_fluff = 0.9  # 0.0 to 1.5
+butt_fluff = 1.25  # 0.8 to 1.4
+tail_length = 0.7  # 0.3 to 1.4
+sock_length = 0.5  # 0.0 to 1.0
+tail_style = "stub"  # stub, curl or plume
+face = "blaze"  # none, blaze or urajiro
+chest = "ruff"  # none, ruff or bib
+brows = false
+
+[[marks]]
+space = "head"
+kind = "polygon"
+color = "#8E4C278C"
+width = 2.0
+points = [[-70.0, -28.0], [-64.166664, -29.9], [-58.333332, -31.7], [-52.5, -33.3], [-46.666664, -34.8], [-40.833336, -36.2], [-35.0, -37.5], [-29.166668, -38.7], [-23.333332, -39.9], [-17.5, -40.9], [-11.666668, -42.0], [-5.833336, -43.0], [0.0, -44.0], [5.833336, -43.0], [11.666664, -42.0], [17.5, -40.9], [23.333336, -39.9], [29.166664, -38.7], [35.0, -37.5], [40.833336, -36.2], [46.666664, -34.8], [52.5, -33.3], [58.33333, -31.7], [64.16667, -29.9], [70.0, -28.0], [70.0, -70.0], [-70.0, -70.0]]
+
+[[marks]]
+space = "body"
+kind = "polygon"
+color = "#8E4C2773"
+width = 2.0
+points = [[70.0, -150.0], [68.2, -139.3], [63.1, -129.2], [54.7, -120.1], [43.6, -112.5], [30.4, -106.8], [15.6, -103.2], [-0.0, -102.0], [-15.6, -103.2], [-30.4, -106.8], [-43.6, -112.5], [-54.7, -120.1], [-63.1, -129.2], [-68.2, -139.3], [-70.0, -150.0], [-68.2, -160.7], [-63.1, -170.8], [-54.7, -179.9], [-43.6, -187.5], [-30.4, -193.2], [-15.6, -196.8], [0.0, -198.0], [15.6, -196.8], [30.4, -193.2], [43.6, -187.5], [54.7, -179.9], [63.1, -170.8], [68.2, -160.7]]

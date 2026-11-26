@@ -1,0 +1,231 @@
+name: Release
+
+# Builds the release files and publishes them on a GitHub release.
+# Start it by pushing a version tag that matches the workspace version in Cargo.toml:
+#   git tag v0.1.0 && git push origin v0.1.0
+# or run it by hand from the Actions tab with an existing tag.
+#
+# Release files:
+#   DeskCorgi-Windows-x64.exe       the app on its own
+#   DeskCorgi-Windows-x64.zip       the app with README, LICENSE and the skin templates
+#   DeskCorgi-Linux-amd64.deb       Debian/Ubuntu package (x86_64)
+#   DeskCorgi-Linux-arm64.deb       Debian/Ubuntu package (ARM64)
+#   DeskCorgi-Linux-x86_64.tar.gz   portable Linux build (x86_64)
+#   DeskCorgi-Linux-arm64.tar.gz    portable Linux build (ARM64)
+#   DeskCorgi-macOS-universal.zip   DeskCorgi.app for Apple Silicon and Intel
+#
+# Only the Windows version of the app is finished. The Linux and macOS builds start and
+# print that the platform isn't supported yet (M4–M6 in IMPLEMENTATION_PLAN.md); the
+# release notes say so.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check the tag matches the version in Cargo.toml
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne $env:TAG) { throw "Tag $env:TAG does not match Cargo.toml version $version (expected v$version)" }
+
+      - run: cargo test --workspace
+      - run: cargo build --release
+
+      - name: Check binary size (must stay under 1.25 MiB)
+        shell: pwsh
+        run: |
+          $size = (Get-Item target/release/DeskCorgi.exe).Length
+          Write-Host "DeskCorgi.exe is $size bytes"
+          if ($size -gt 1310720) { throw "DeskCorgi.exe grew past 1.25 MiB ($size bytes)" }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist, pkg/DeskCorgi/skins | Out-Null
+          Copy-Item target/release/DeskCorgi.exe dist/DeskCorgi-Windows-x64.exe
+          Copy-Item target/release/DeskCorgi.exe, README.md, LICENSE pkg/DeskCorgi/
+          Copy-Item skins/*.toml pkg/DeskCorgi/skins/
+          Compress-Archive -Path pkg/DeskCorgi -DestinationPath dist/DeskCorgi-Windows-x64.zip
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    name: Linux ${{ matrix.deb_arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            deb_arch: amd64
+            tar_arch: x86_64
+          - runner: ubuntu-24.04-arm
+            deb_arch: arm64
+            tar_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace
+      - run: cargo build --release
+
+      - name: Package (.tar.gz and .deb)
+        env:
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          TAR_ARCH: ${{ matrix.tar_arch }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          mkdir -p dist
+
+          # Portable archive.
+          mkdir -p pkg/DeskCorgi/skins
+          cp target/release/DeskCorgi pkg/DeskCorgi/deskcorgi
+          cp README.md LICENSE pkg/DeskCorgi/
+          cp skins/*.toml pkg/DeskCorgi/skins/
+          tar -C pkg -czf "dist/DeskCorgi-Linux-${TAR_ARCH}.tar.gz" DeskCorgi
+
+          # Debian package.
+          root=deb/deskcorgi
+          install -Dm755 target/release/DeskCorgi "$root/usr/bin/deskcorgi"
+          install -Dm644 README.md "$root/usr/share/doc/deskcorgi/README.md"
+          install -Dm644 LICENSE "$root/usr/share/doc/deskcorgi/copyright"
+          install -d "$root/usr/share/deskcorgi/skins"
+          install -m644 skins/*.toml "$root/usr/share/deskcorgi/skins/"
+          mkdir -p "$root/DEBIAN"
+          cat > "$root/DEBIAN/control" <<EOF
+          Package: deskcorgi
+          Version: ${version}
+          Section: misc
+          Priority: optional
+          Architecture: ${DEB_ARCH}
+          Maintainer: Layfate <Layfate@users.noreply.github.com>
+          Homepage: https://github.com/${GITHUB_REPOSITORY}
+          Description: Tiny desktop corgi that mirrors your keyboard and mouse
+           DeskCorgi sits behind its own little keyboard and taps along as you type.
+           The Linux version is a preview: it is not finished yet.
+          EOF
+          dpkg-deb --build --root-owner-group "$root" "dist/DeskCorgi-Linux-${DEB_ARCH}.deb"
+          dpkg-deb --info "dist/DeskCorgi-Linux-${DEB_ARCH}.deb"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.deb_arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - run: cargo test --workspace
+      - run: cargo build --release --target aarch64-apple-darwin
+      - run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Package (universal DeskCorgi.app)
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          app=pkg/DeskCorgi/DeskCorgi.app
+          mkdir -p "$app/Contents/MacOS" pkg/DeskCorgi/skins dist
+          lipo -create -output "$app/Contents/MacOS/DeskCorgi" \
+            target/aarch64-apple-darwin/release/DeskCorgi \
+            target/x86_64-apple-darwin/release/DeskCorgi
+          lipo -info "$app/Contents/MacOS/DeskCorgi"
+          cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>DeskCorgi</string>
+            <key>CFBundleDisplayName</key><string>DeskCorgi</string>
+            <key>CFBundleIdentifier</key><string>io.github.layfate.deskcorgi</string>
+            <key>CFBundleExecutable</key><string>DeskCorgi</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${version}</string>
+            <key>CFBundleVersion</key><string>${version}</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>LSUIElement</key><true/>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint "$app/Contents/Info.plist"
+          cp README.md LICENSE pkg/DeskCorgi/
+          cp skins/*.toml pkg/DeskCorgi/skins/
+          (cd pkg && ditto -c -k --keepParent DeskCorgi ../dist/DeskCorgi-macOS-universal.zip)
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-universal
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create the release (or update its files)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ls -l dist
+          cat > notes.md <<'EOF'
+          ## Downloads
+
+          **Windows 10 / 11:** download `DeskCorgi-Windows-x64.exe` and run it (no installer), or
+          `DeskCorgi-Windows-x64.zip` for the app together with the skin templates.
+
+          **Linux and macOS: preview only.** The `.deb`, `.tar.gz` and macOS `.zip` files are not
+          working apps yet. The Linux and macOS versions of DeskCorgi are still being built, so
+          these builds only print "DeskCorgi currently runs on Windows only" and quit.
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "DeskCorgi $TAG" --notes-file notes.md
+          fi

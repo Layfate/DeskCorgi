@@ -7,7 +7,7 @@ use std::path::Path;
 
 use deskcorgi_core::geom::pt;
 use deskcorgi_core::keymap::key;
-use deskcorgi_core::skin::{corgi, corgi_merle, corgi_tricolor};
+use deskcorgi_core::skin::corgi;
 use deskcorgi_core::tiny_skia::{Color, IntRect, Pixmap, PixmapPaint, Transform};
 use deskcorgi_core::{FrameInput, InputEvent, MoodConfig, MouseButton, Pet, Pose, RenderOptions, Renderer, Skin};
 
@@ -122,6 +122,7 @@ const SEQS: [Seq; 11] = [
             cursor: Some(pt(-200.0, -100.0)),
             dragging: i < 30,
             drag_velocity: pt(((i as f32) * 0.25).sin() * 900.0, -100.0),
+            ..Default::default()
         },
     },
     Seq {
@@ -175,7 +176,7 @@ fn main() {
     std::fs::create_dir_all(&out).unwrap();
     let mut renderer = Renderer::new(scale);
     let opts = RenderOptions { scale, ..Default::default() };
-    for skin in [corgi(), corgi_tricolor(), corgi_merle()] {
+    for skin in [corgi()] {
         for (sheet_no, chunk) in SEQS.chunks(6).enumerate() {
             let cw = crop.width();
             let ch = crop.height();

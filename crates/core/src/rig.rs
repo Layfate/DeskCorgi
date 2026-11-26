@@ -55,6 +55,12 @@ impl HeadXf {
         self.finish(pt(p.x + self.yaw.sin() * depth, p.y + self.pitch.sin() * depth))
     }
 
+    /// For outlines drawn with a turn keyframe: the keyframe already holds the yaw, so only
+    /// pitch shifts the shape (by `depth`).
+    pub fn map_turned(&self, p: Pt, depth: f32) -> Pt {
+        self.finish(pt(p.x, p.y + self.pitch.sin() * depth))
+    }
+
     /// Local frame for a small feature at head-space point `p` on the dome. The x axis is
     /// foreshortened by how much the dome is turned at that spot.
     pub fn feature_frame(&self, p: Pt, extra: f32, rotate: f32) -> Affine {
@@ -73,17 +79,16 @@ impl HeadXf {
 /// Where everything is for one frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Rig {
-    /// Body space → canvas (lean, lift, tilt and breathing).
+    /// Body space → canvas (lean, lift, tilt, squash and breathing).
     pub body: Affine,
-    /// Torso outline space → canvas (adds body width and the Corgi hip wiggle).
-    pub torso: Affine,
     pub head: HeadXf,
+    /// Like `body`, without breathing: the front legs hang from this, so they hold perfectly
+    /// still while the dog breathes (a nearly straight leg turned a 1-unit breath into the
+    /// elbow swinging 5 units side to side).
+    steady: Affine,
     body_width: f32,
     leg_length: f32,
 }
-
-/// Length of a front leg from shoulder to paw (canvas units).
-pub const ARM_REACH: f32 = 132.0;
 
 /// Base head size; the skin's `head_scale` multiplies this. A big head reads as cute.
 pub const HEAD_BASE_SCALE: f32 = 1.1;
@@ -94,13 +99,13 @@ pub fn head_height(shape: &Shape) -> f32 {
 
 impl Rig {
     pub fn new(shape: &Shape, pose: &Pose) -> Rig {
-        let sq = pose.body_squash.clamp(0.8, 1.25);
-        let body = Affine::translate(SEAT + pt(pose.body_lean, pose.body_lift))
-            .then_after(Affine::rotate(pose.body_tilt))
-            .then_after(Affine::scale(1.0 / sq.sqrt(), sq));
-        let sway = pose.hip_sway;
-        let skew = Affine { a: 1.0, b: 0.0, c: sway / TORSO_H, d: 1.0, e: sway, f: 0.0 };
-        let torso = body.then_after(skew).then_after(Affine::scale(shape.body_width, 1.0));
+        let frame = Affine::translate(SEAT + pt(pose.body_lean, pose.body_lift)).then_after(Affine::rotate(pose.body_tilt));
+        let squash = |sq: f32| {
+            let sq = sq.clamp(0.8, 1.25);
+            Affine::scale(1.0 / sq.sqrt(), sq)
+        };
+        let steady = frame.then_after(squash(pose.body_squash));
+        let body = frame.then_after(squash(pose.body_squash + pose.body_breath));
         let neck = body.map(pt(0.0, -head_height(shape)));
         let head = HeadXf {
             center: neck + pt(0.0, pose.head_drop),
@@ -109,7 +114,13 @@ impl Rig {
             yaw: pose.head_yaw,
             pitch: pose.head_pitch,
         };
-        Rig { body, torso, head, body_width: shape.body_width, leg_length: shape.leg_length }
+        Rig { body, head, steady, body_width: shape.body_width, leg_length: shape.leg_length }
+    }
+
+    /// Torso outline space → canvas (adds the body width). The body doesn't wiggle with the
+    /// tail: its sides run right under the front legs, so any wiggle read as the arms shaking.
+    pub fn torso_pt(&self, q: Pt) -> Pt {
+        self.body.map(pt(q.x * self.body_width, q.y))
     }
 
     fn shoulder_local(body_width: f32, leg_length: f32, side: usize) -> Pt {
@@ -124,38 +135,35 @@ impl Rig {
     /// right). It sits just inside the flank under the cheek, like a real shoulder, outside
     /// the chest fur.
     pub fn shoulder(&self, side: usize) -> Pt {
-        self.body.map(Rig::shoulder_local(self.body_width, self.leg_length, side))
+        self.steady.map(Rig::shoulder_local(self.body_width, self.leg_length, side))
     }
 
     /// Point up the flank, under the head, that the front leg grows out of (the shoulder
     /// blade). The leg's root runs along the inside of the flank to it, never across the chest.
     pub fn arm_root(&self, side: usize) -> Pt {
         let j = Rig::shoulder_local(self.body_width, self.leg_length, side);
-        self.body.map(j + pt(-side_sign(side) * 5.0, -28.0))
+        self.steady.map(j + pt(-side_sign(side) * 5.0, -28.0))
     }
 
-    /// The real length of a front leg, shoulder to paw. Long enough to reach the mouse and
-    /// the far keys; paws are never placed further away than this, so legs never stretch.
-    /// Closer targets are reached with a gentle bend (see `limb::soft_elbow`).
-    pub fn arm_reach(&self) -> f32 {
-        ARM_REACH
-    }
-
-    /// Shoulder-to-paw distance in the resting pose, the reference the sock length is
-    /// measured against (so socks keep the same size however far the leg reaches).
-    pub fn rest_arm_span(&self) -> f32 {
+    /// Upper-arm and forearm length. Constant for a skin: 2% longer than the distance from
+    /// the shoulder to the paw's resting spot.
+    pub fn arm_bones(&self) -> (f32, f32) {
         let shoulder = SEAT + Rig::shoulder_local(self.body_width, self.leg_length, 1);
-        (paw_rest(1) - shoulder).len()
+        let d = (paw_rest(1) - shoulder).len();
+        // Only slightly longer than the reach, so a resting leg has a soft bend but its elbow
+        // never bows out past the side of the body (which would put an S-curve in the
+        // silhouette).
+        (0.51 * d, 0.51 * d)
     }
 
     /// Hip joint of the back leg, right at the keyboard's top edge.
     pub fn hip(&self, side: usize) -> Pt {
-        self.torso.map(pt(side_sign(side) * 50.0, -30.0))
+        self.torso_pt(pt(side_sign(side) * 50.0, -30.0))
     }
 
     /// Point inside the flank that the back leg grows out of.
     pub fn hip_root(&self, side: usize) -> Pt {
-        self.torso.map(pt(side_sign(side) * 30.0, -60.0))
+        self.torso_pt(pt(side_sign(side) * 30.0, -60.0))
     }
 
     /// Thigh and shin length of the back legs.
