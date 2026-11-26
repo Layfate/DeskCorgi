@@ -5,11 +5,11 @@
 **A tiny desktop corgi that sits behind its own little keyboard and mirrors everything you type and click.**
 
 <p>
-  <a href="https://github.com/Layfate/DeskCorgi/releases/latest"><img src="https://img.shields.io/github/v/release/Layfate/DeskCorgi?style=for-the-badge&label=Release&color=1f6feb" alt="Release"></a>
-  <a href="https://github.com/Layfate/DeskCorgi/releases"><img src="https://img.shields.io/github/downloads/Layfate/DeskCorgi/total?style=for-the-badge&label=Downloads&color=2ea44f" alt="Downloads"></a>
-  <a href="https://github.com/Layfate/DeskCorgi/stargazers"><img src="https://img.shields.io/github/stars/Layfate/DeskCorgi?style=for-the-badge&label=Stars&color=e3b341" alt="Stars"></a>
-  <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-555555?style=for-the-badge" alt="Platform">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Layfate/DeskCorgi?style=for-the-badge&label=License&color=8957e5" alt="License"></a>
+  <a href="https://github.com/Layfate/DeskCorgi/releases/latest"><img src="https://img.shields.io/github/v/release/Layfate/DeskCorgi?style=flat-square&label=Release&color=1f6feb" height="24" alt="Release"></a>
+  <a href="https://github.com/Layfate/DeskCorgi/releases"><img src="https://img.shields.io/github/downloads/Layfate/DeskCorgi/total?style=flat-square&label=Downloads&color=2ea44f" height="24" alt="Downloads"></a>
+  <a href="https://github.com/Layfate/DeskCorgi/stargazers"><img src="https://img.shields.io/github/stars/Layfate/DeskCorgi?style=flat-square&label=Stars&color=e3b341" height="24" alt="Stars"></a>
+  <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-555555?style=flat-square" height="24" alt="Platform">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Layfate/DeskCorgi?style=flat-square&label=License&color=8957e5" height="24" alt="License"></a>
 </p>
 
 <p>
