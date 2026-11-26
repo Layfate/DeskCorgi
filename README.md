@@ -62,10 +62,10 @@ It comes in five coats, picked from **Dog** in the menu: **Corgi** (red), **Tric
 | shake the cursor quickly | plays chase |
 | hover back and forth over its head, or click it | gets petted |
 | click rapidly (8 times in about a second) | does zoomies |
-| drag it | dangles by the scruff and swings |
+| drag it | drops its keyboard and dangles with its legs hanging down; set it down and it lands with a happy squint as the keyboard pops back in |
 | press Backspace a few times quickly | tilts its head, puzzled, with a little "?" |
 | leave it alone for a while | gives a big sleepy yawn now and then |
-| stay idle for 5 minutes | yawns, then naps on the keyboard |
+| stay idle for a while (2 minutes by default; **Behaviour → Nap** picks 1, 2, 5 or 10, or Never) | yawns, then naps on the keyboard |
 
 ## Installation
 

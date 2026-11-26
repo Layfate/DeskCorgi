@@ -7,8 +7,8 @@
 use std::f32::consts::PI;
 
 use tiny_skia::{
-    Color, FillRule, GradientStop, LineCap, LineJoin, LinearGradient, Mask, Paint, Path, PathBuilder, Pixmap,
-    PixmapPaint, Point, RadialGradient, Shader, SpreadMode, Stroke, Transform,
+    Color, FillRule, FilterQuality, GradientStop, LineCap, LineJoin, LinearGradient, Mask, Paint, Path, PathBuilder,
+    Pixmap, PixmapPaint, Point, RadialGradient, Shader, SpreadMode, Stroke, Transform,
 };
 
 use crate::art::{self, Art, Shape, TURN_YAW};
@@ -45,6 +45,9 @@ pub fn pixel_size(scale: f32) -> (u32, u32) {
 
 pub struct Renderer {
     pixmap: Pixmap,
+    /// The desk is drawn here first while it falls away or pops back in, so it fades as one
+    /// piece. Only allocated once that happens.
+    scratch: Option<Pixmap>,
     masks: [Mask; 3],
     scale: f32,
     keyboard: Option<Layer>,
@@ -84,12 +87,27 @@ impl Layer {
     fn blit(&self, p: &mut Painter) {
         p.pm.draw_pixmap(self.x, self.y, self.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
     }
+
+    /// Blits with the canvas-space transform `g` applied on top of the painter's scale.
+    fn blit_moved(&self, p: &mut Painter, scale: f32, g: Transform, opacity: f32) {
+        let ts = Transform::from_scale(scale, scale).pre_concat(g).pre_concat(Transform::from_scale(1.0 / scale, 1.0 / scale));
+        let paint = PixmapPaint { opacity, quality: FilterQuality::Bilinear, ..PixmapPaint::default() };
+        p.pm.draw_pixmap(self.x, self.y, self.pixmap.as_ref(), &paint, ts, None);
+    }
 }
 
 impl Renderer {
     pub fn new(scale: f32) -> Renderer {
         let (w, h) = pixel_size(scale);
-        Renderer { pixmap: new_pixmap(w, h), masks: new_masks(w, h), scale, keyboard: None, ground: None, art: art::builtin().clone() }
+        Renderer {
+            pixmap: new_pixmap(w, h),
+            scratch: None,
+            masks: new_masks(w, h),
+            scale,
+            keyboard: None,
+            ground: None,
+            art: art::builtin().clone(),
+        }
     }
 
     pub fn pixmap(&self) -> &Pixmap {
@@ -109,6 +127,7 @@ impl Renderer {
         let (w, h) = pixel_size(opts.scale);
         if self.pixmap.width() != w || self.pixmap.height() != h || self.scale != opts.scale {
             self.pixmap = new_pixmap(w, h);
+            self.scratch = None;
             self.masks = new_masks(w, h);
             self.scale = opts.scale;
         }
@@ -126,9 +145,14 @@ impl Renderer {
                 draw_mouse_pad(p, &theme.colors());
             }));
         }
+        let desk = Desk::new(pose);
+        let scratch = match desk {
+            Desk::Moving { .. } => Some(self.scratch.get_or_insert_with(|| new_pixmap(w, h))),
+            _ => None,
+        };
         let [m0, m1, m2] = &mut self.masks;
         let mut p = Painter { pm: &mut self.pixmap, ts: Transform::from_scale(s, s), head: m0, body: m1, tmp: m2, art: &self.art };
-        draw_scene(&mut p, pose, skin, opts, self.ground.as_ref(), self.keyboard.as_ref());
+        draw_scene(&mut p, pose, skin, opts, self.ground.as_ref(), self.keyboard.as_ref(), desk, scratch);
         &self.pixmap
     }
 }
@@ -390,14 +414,65 @@ fn linear(a: Pt, b: Pt, c0: Rgba, c1: Rgba) -> Option<Shader<'static>> {
 // Scene
 // -------------------------------------------------------------------------------------------
 
-fn draw_scene(p: &mut Painter, pose: &Pose, skin: &Skin, o: &RenderOptions, ground: Option<&Layer>, keyboard: Option<&Layer>) {
+/// Where the desk (shadow, mouse pad, mouse and keyboard) is this frame.
+#[derive(Clone, Copy)]
+enum Desk {
+    InPlace,
+    /// Falling away or popping back in: `g` moves it (canvas units), `alpha` fades it.
+    Moving { g: Transform, alpha: f32 },
+    Gone,
+}
+
+impl Desk {
+    fn new(pose: &Pose) -> Desk {
+        let alpha = pose.desk_alpha;
+        if !alpha.is_finite() || alpha <= 0.004 {
+            return Desk::Gone;
+        }
+        let (shift, rot, scale) = (pose.desk_shift, pose.desk_rot, pose.desk_scale);
+        if !(shift.is_finite() && rot.is_finite() && scale.is_finite()) {
+            return Desk::InPlace;
+        }
+        if alpha >= 0.999 && shift.abs() < 0.01 && rot.abs() < 1e-4 && (scale - 1.0).abs() < 1e-4 {
+            return Desk::InPlace;
+        }
+        // Pivot on the middle of the desk's bottom edge, so it grows up out of the desk top.
+        let pivot = pt(DOG_X - 40.0, KB_BL.y + KB_FRONT);
+        let scale = scale.max(0.01);
+        let g = Transform::from_translate(pivot.x, pivot.y + shift)
+            .pre_concat(Transform::from_rotate(rot.to_degrees()))
+            .pre_concat(Transform::from_scale(scale, scale))
+            .pre_concat(Transform::from_translate(-pivot.x, -pivot.y));
+        Desk::Moving { g, alpha: alpha.min(1.0) }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_scene<'a>(
+    p: &mut Painter<'a>,
+    pose: &Pose,
+    skin: &Skin,
+    o: &RenderOptions,
+    ground: Option<&Layer>,
+    keyboard: Option<&Layer>,
+    desk: Desk,
+    scratch: Option<&'a mut Pixmap>,
+) {
     let rig = Rig::new(&skin.shape, pose);
     let kb = o.keyboard.colors();
-    match ground {
-        Some(g) => g.blit(p),
-        None => {
+    let base = p.ts;
+    let s = base.sx;
+    match (desk, ground) {
+        (Desk::Gone, _) => {}
+        (Desk::InPlace, Some(g)) => g.blit(p),
+        (Desk::Moving { g, alpha }, Some(l)) => l.blit_moved(p, s, g, alpha),
+        (_, None) => {
+            if let Desk::Moving { g, .. } = desk {
+                p.ts = base.pre_concat(g);
+            }
             draw_shadow(p);
             draw_mouse_pad(p, &kb);
+            p.ts = base;
         }
     }
     draw_tail(p, pose, skin, &rig);
@@ -405,14 +480,44 @@ fn draw_scene(p: &mut Painter, pose: &Pose, skin: &Skin, o: &RenderOptions, grou
     draw_body(p, skin, &rig, &legs);
     draw_ears(p, pose, skin, &rig);
     draw_head(p, pose, skin, &rig, o);
-    draw_mouse(p, pose, &kb);
-    match keyboard {
-        Some(k) => k.blit(p),
-        None => draw_keyboard_base(p, &kb),
+    match (desk, scratch) {
+        (Desk::InPlace, _) => {
+            draw_mouse(p, pose, &kb);
+            match keyboard {
+                Some(k) => k.blit(p),
+                None => draw_keyboard_base(p, &kb),
+            }
+            draw_key_overlay(p, pose, &kb, o.key_glow);
+        }
+        (Desk::Moving { g, alpha }, Some(scratch)) => {
+            // Mouse and keyboard go into the scratch pixmap, which is then faded on as one.
+            scratch.fill(Color::TRANSPARENT);
+            let main = std::mem::replace(&mut p.pm, scratch);
+            p.ts = base.pre_concat(g);
+            draw_mouse(p, pose, &kb);
+            match keyboard {
+                Some(k) => {
+                    p.ts = base;
+                    k.blit_moved(p, s, g, 1.0);
+                }
+                None => draw_keyboard_base(p, &kb),
+            }
+            p.ts = base;
+            let scratch = std::mem::replace(&mut p.pm, main);
+            let paint = PixmapPaint { opacity: alpha, ..PixmapPaint::default() };
+            p.pm.draw_pixmap(0, 0, scratch.as_ref(), &paint, Transform::identity(), None);
+        }
+        _ => {}
     }
-    draw_key_overlay(p, pose, &kb, o.key_glow);
-    draw_legs_over_keyboard(p, pose, &legs, skin);
-    draw_key_popups(p, pose, &kb);
+    let desk_alpha = match desk {
+        Desk::InPlace => 1.0,
+        Desk::Moving { alpha, .. } => alpha,
+        Desk::Gone => 0.0,
+    };
+    draw_legs_over_keyboard(p, pose, &legs, skin, desk_alpha);
+    if matches!(desk, Desk::InPlace) {
+        draw_key_popups(p, pose, &kb);
+    }
     draw_particles(p, pose);
 }
 
@@ -1524,7 +1629,9 @@ fn fill_fillets(p: &mut Painter, legs: &Legs, leg: &LegDraw, skin: &Skin, clip: 
 /// ink → fill → contour order, clipped below the split line), then the paws. Over the
 /// keyboard a leg is outlined in full; between the split line and the keyboard's edge the
 /// line widths blend from the body pass to that, so there is no step.
-fn draw_legs_over_keyboard(p: &mut Painter, pose: &Pose, legs: &Legs, skin: &Skin) {
+/// `desk` is how much of the keyboard is there (it fades while the dog is held up): with no
+/// keyboard, the legs keep their body-pass lines.
+fn draw_legs_over_keyboard(p: &mut Painter, pose: &Pose, legs: &Legs, skin: &Skin, desk: f32) {
     let pal = &skin.palette;
     let below = poly(&[pt(-50.0, LEG_SPLIT_Y), pt(CANVAS_W + 50.0, LEG_SPLIT_Y), pt(CANVAS_W + 50.0, CANVAS_H + 50.0), pt(-50.0, CANVAS_H + 50.0)]);
     p.set_mask(Clip::Tmp, &below);
@@ -1543,8 +1650,8 @@ fn draw_legs_over_keyboard(p: &mut Painter, pose: &Pose, legs: &Legs, skin: &Ski
             (0..edge.len())
                 .map(|i| {
                     let base = if leg.behind[e][i] { leg.contour[e][i] } else { INK };
-                    if point_in_polygon(edge[i], &keyboard) {
-                        lerp(base, INK, smoothstep(LEG_SPLIT_Y, KB_TL.y + 3.0, edge[i].y))
+                    if desk > 0.0 && point_in_polygon(edge[i], &keyboard) {
+                        lerp(base, INK, desk * smoothstep(LEG_SPLIT_Y, KB_TL.y + 3.0, edge[i].y))
                     } else {
                         base
                     }

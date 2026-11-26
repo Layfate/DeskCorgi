@@ -8,7 +8,8 @@ use crate::input::{wpm, InputEvent, MouseButton, RateCounter};
 use crate::keymap::{KeyId, KEY_COUNT};
 use crate::rig::Rig;
 use crate::scene::{
-    clamp_mouse, key_center, mouse_spot, paw_rest, preferred_side, side_sign, MOUSE_REST, MOUSE_SIDE, SEAT, WAVE_SIDE,
+    clamp_mouse, key_center, mouse_spot, paw_rest, preferred_side, side_sign, DOG_X, KB_TL, MOUSE_REST, MOUSE_SIDE, SEAT,
+    WAVE_SIDE,
 };
 use crate::skin::Skin;
 use crate::spring::{Spring, Spring2, MAX_DT};
@@ -133,6 +134,13 @@ pub struct Pose {
     pub marquee_boost: f32,
     pub particles: Vec<Particle>,
     pub key_popups: Vec<KeyPopup>,
+    /// The desk (keyboard, mouse and pad). Picked up, the dog drops it: it falls away and
+    /// fades out; set down again, it pops back in with a bounce. `desk_shift` moves it down,
+    /// `desk_rot` tips it, `desk_scale` grows it from its bottom edge, `desk_alpha` fades it.
+    pub desk_shift: f32,
+    pub desk_rot: f32,
+    pub desk_scale: f32,
+    pub desk_alpha: f32,
 }
 
 impl Pose {
@@ -175,8 +183,46 @@ impl Pose {
             marquee_boost: 0.0,
             particles: Vec::new(),
             key_popups: Vec::new(),
+            desk_shift: 0.0,
+            desk_rot: 0.0,
+            desk_scale: 1.0,
+            desk_alpha: 1.0,
         }
     }
+}
+
+/// How long the desk takes to fall away when the dog is picked up.
+const DESK_FALL_TIME: f32 = 0.36;
+/// Set down again, the dog lands first, then the desk pops back in.
+const DESK_BACK_DELAY: f32 = 0.16;
+const DESK_POP_TIME: f32 = 0.42;
+
+/// Desk placement `(shift, rot, scale, alpha)` `fall` seconds after it was dropped (while
+/// held) or `back` seconds after the dog was set down.
+fn desk_motion(held: bool, fall: f32, back: f32, spin: f32) -> (f32, f32, f32, f32) {
+    if held {
+        // A tiny hop as the paws let go, then gravity, tipping over and fading out.
+        let t = fall.max(0.0);
+        let shift = -90.0 * t + 900.0 * t * t;
+        let rot = spin * 0.32 * smoothstep(0.0, DESK_FALL_TIME, t);
+        let alpha = 1.0 - smoothstep(0.1, DESK_FALL_TIME, t);
+        (shift, rot, 1.0, alpha)
+    } else {
+        let u = (back - DESK_BACK_DELAY) / DESK_POP_TIME;
+        if u >= 1.0 || !u.is_finite() {
+            return (0.0, 0.0, 1.0, 1.0);
+        }
+        let u = u.max(0.0);
+        (0.0, 0.0, 0.5 + 0.5 * ease_out_back(u), smoothstep(0.0, 0.3, u))
+    }
+}
+
+/// 0 → 1 with a springy overshoot near the end.
+fn ease_out_back(x: f32) -> f32 {
+    let c1 = 2.2;
+    let c3 = c1 + 1.0;
+    let x = x.clamp(0.0, 1.0) - 1.0;
+    1.0 + c3 * x * x * x + c1 * x * x
 }
 
 /// Per-frame input from the platform layer.
@@ -308,6 +354,11 @@ pub struct Pet {
     hops_left: u8,
     breath_phase: f32,
     marquee: f32,
+    desk_fall_at: f64,
+    desk_back_at: f64,
+    desk_spin: f32,
+    desk_sparkled: bool,
+    landed_until: f64,
     particles: Vec<Particle>,
     popups: Vec<KeyPopup>,
     pose: Pose,
@@ -400,6 +451,11 @@ impl Pet {
             hops_left: 0,
             breath_phase: 0.0,
             marquee: 0.0,
+            desk_fall_at: f64::NEG_INFINITY,
+            desk_back_at: f64::NEG_INFINITY,
+            desk_spin: 1.0,
+            desk_sparkled: true,
+            landed_until: f64::NEG_INFINITY,
             particles: Vec::new(),
             popups: Vec::new(),
             pose: Pose::neutral(),
@@ -431,6 +487,7 @@ impl Pet {
             || !self.lift.is_settled()
             || self.now - self.yawn_start < YAWN_TIME
             || self.now < self.huh_until
+            || self.now - self.desk_back_at < (DESK_BACK_DELAY + DESK_POP_TIME + 0.6) as f64
     }
 
     pub fn rig(&self, skin: &Skin) -> Rig {
@@ -547,6 +604,10 @@ impl Pet {
     /// The platform layer calls this on a fresh key press (not on auto-repeat), and only when
     /// the user has key pop-ups turned on.
     pub fn show_key(&mut self, id: KeyId, label: &'static str) {
+        // No keyboard to pop out of while the dog is held up.
+        if self.mood.mood == Mood::Scruff {
+            return;
+        }
         if self.popups.len() >= MAX_KEY_POPUPS {
             self.popups.remove(0);
         }
@@ -578,7 +639,20 @@ impl Pet {
             }
             Mood::Pat => self.next_heart = self.now,
             Mood::Sleep => self.next_z = self.now + 0.8,
+            Mood::Scruff => {
+                // Picked up: the dog lets go of its desk and it drops away.
+                self.desk_fall_at = self.now;
+                self.popups.clear();
+            }
             _ => {}
+        }
+        if prev == Mood::Scruff {
+            // Set down: a soft landing (lift and stretch spring back with a little bounce),
+            // a happy squint, then the desk pops back in.
+            self.desk_back_at = self.now;
+            self.desk_sparkled = false;
+            self.lift.kick(60.0);
+            self.landed_until = self.now + 0.9;
         }
         if prev == Mood::Sleep {
             self.wave_until = self.now + 1.8;
@@ -663,6 +737,11 @@ impl Pet {
         let mood = self.mood.update(now, dt, &signals, cfg);
         if mood != prev {
             self.on_enter(mood, prev, &rig);
+            if mood == Mood::Scruff {
+                // The desk tips the way it was jerked.
+                let vx = if input.drag_velocity.x.is_finite() { input.drag_velocity.x } else { 0.0 };
+                self.desk_spin = if vx < 0.0 { 1.0 } else { -1.0 };
+            }
         }
 
         // ---- yawning -------------------------------------------------------------------
@@ -789,7 +868,8 @@ impl Pet {
             self.paw_key[side] = front[side];
             let rest = paw_rest(side);
             let (target, press) = match mood {
-                Mood::Scruff => (rig.shoulder(side) + pt(s * 6.0, 50.0) + swing, 0.0),
+                // Held up: the front legs hang down limp, swinging a little.
+                Mood::Scruff => (rig.shoulder(side) + pt(s * 4.0, 62.0) + swing, 0.0),
                 Mood::Zoomies => {
                     let wave = (t * 16.0 + side as f32 * PI).sin() * 10.0;
                     (rig.shoulder(side) + pt(s * 22.0, 30.0 + wave), 0.0)
@@ -819,6 +899,11 @@ impl Pet {
 
             let hind_key = if matches!(mood, Mood::Scruff | Mood::Zoomies | Mood::Sleep) { None } else { hind[side] };
             match hind_key {
+                // Held up: the back legs dangle under the belly, toe beans showing.
+                None if mood == Mood::Scruff => {
+                    self.hind[side].set_target(rig.hip(side) + pt(-s * 5.0, 54.0) + swing * 0.8);
+                    self.hind_up[side].target = 1.0;
+                }
                 Some(k) => {
                     self.hind[side].set_target(key_center(k) + pt(0.0, -1.0));
                     self.hind_up[side].target = 1.0;
@@ -848,12 +933,15 @@ impl Pet {
             _ => 0.0,
         };
         self.tilt.target = match mood {
-            Mood::Scruff => (drag_v.x * 0.00025).clamp(-0.15, 0.15),
+            // Dangling: a gentle pendulum sway on top of the swing from the drag.
+            Mood::Scruff => (drag_v.x * 0.00025).clamp(-0.15, 0.15) + 0.035 * (t * 2.6).sin(),
             _ => 0.0,
         };
-        self.lift.target = if mood == Mood::Scruff { -18.0 } else { 0.0 };
-        // A yawn stretches the dog a little taller.
-        self.squash.target = if mood == Mood::Scruff { 1.07 } else { 1.0 + 0.05 * yawn };
+        // It hangs down from where it is held, so the head stays put and the body drops into the
+        // space the desk left.
+        self.lift.target = if mood == Mood::Scruff { 18.0 } else { 0.0 };
+        // Held up, the dog hangs long like a noodle. A yawn stretches it a little taller.
+        self.squash.target = if mood == Mood::Scruff { 1.22 } else { 1.0 + 0.05 * yawn };
         if mood == Mood::Zoomies && self.hops_left > 0 && now >= self.next_hop {
             self.lift.kick(-300.0);
             self.squash.kick(1.6);
@@ -887,7 +975,8 @@ impl Pet {
             let double = self.rng.f32() < 0.2;
             self.next_blink = now + if double { 0.3 } else { self.rng.range(2.4, 6.0) as f64 };
         }
-        self.happy.target = if matches!(mood, Mood::Pat | Mood::Zoomies) { 1.0 } else { 0.0 };
+        let landed = now < self.landed_until;
+        self.happy.target = if matches!(mood, Mood::Pat | Mood::Zoomies) || landed { 1.0 } else { 0.0 };
         self.sleepy.target = if mood == Mood::Sleep { 1.0 } else { 0.0 };
         self.pupil.target = match mood {
             Mood::Chase => 1.38,
@@ -1020,6 +1109,15 @@ impl Pet {
         self.marquee = (self.marquee + dt * (0.22 + 0.5 * boost)).fract();
 
         // ---- particles -----------------------------------------------------------------
+        // The desk pops back in with a little burst of stars.
+        if !self.desk_sparkled && mood != Mood::Scruff && now - self.desk_back_at >= (DESK_BACK_DELAY + 0.1) as f64 {
+            self.desk_sparkled = true;
+            for (x, y, vx) in [(-95.0, 6.0, -55.0), (-40.0, -8.0, -20.0), (40.0, -8.0, 20.0), (95.0, 6.0, 55.0)] {
+                let at = pt(DOG_X - 30.0 + x, KB_TL.y + 14.0 + y);
+                let size = self.rng.range(4.0, 6.0);
+                self.spawn(ParticleKind::Star, at, pt(vx, -60.0 + y * 2.0), 0.7, size);
+            }
+        }
         if mood == Mood::Pat && now >= self.next_heart {
             let p = head_c + pt(self.rng.range(-34.0, 34.0), -46.0);
             let v = pt(self.rng.range(-12.0, 12.0), -46.0);
@@ -1060,6 +1158,8 @@ impl Pet {
         let p = &mut self.pose;
         p.time = t;
         p.mood = mood;
+        let (fall, back) = ((now - self.desk_fall_at) as f32, (now - self.desk_back_at) as f32);
+        (p.desk_shift, p.desk_rot, p.desk_scale, p.desk_alpha) = desk_motion(mood == Mood::Scruff, fall, back, self.desk_spin);
         p.body_lift = self.lift.value;
         p.body_lean = self.lean.value;
         p.body_tilt = self.tilt.value;
@@ -1343,6 +1443,34 @@ mod tests {
         let m = MOUSE_REST + pet.pose().mouse_offset;
         let want = MOUSE_REST + mouse_spot(pt(0.75, 0.5));
         assert!((m - want).len() < 1.5, "{m:?} vs {want:?}");
+    }
+
+    #[test]
+    fn picked_up_dog_drops_its_desk_and_gets_it_back_when_set_down() {
+        let skin = corgi();
+        let mut pet = Pet::new(5);
+        step(&mut pet, &skin, 0.5, FrameInput::default());
+        assert_eq!(pet.pose().desk_alpha, 1.0);
+        let held = FrameInput { dragging: true, drag_velocity: pt(400.0, 0.0), ..Default::default() };
+        step(&mut pet, &skin, 0.2, held);
+        let p = pet.pose();
+        assert!(p.desk_shift > 0.0 && p.desk_rot != 0.0, "the desk falls and tips: {} {}", p.desk_shift, p.desk_rot);
+        step(&mut pet, &skin, 0.5, held);
+        assert_eq!(pet.pose().desk_alpha, 0.0, "gone while held");
+        assert!(pet.pose().hind.iter().all(|h| h.up > 0.9), "back legs dangle");
+        // No key pop-ups without a keyboard.
+        pet.show_key(key(2, 1), "A");
+        assert!(pet.pose().key_popups.is_empty());
+
+        step(&mut pet, &skin, 0.1, FrameInput::default());
+        assert!(pet.pose().desk_alpha < 1.0, "lands first");
+        assert!(pet.is_lively());
+        step(&mut pet, &skin, 0.2, FrameInput::default());
+        let p = pet.pose();
+        assert!(p.desk_alpha > 0.0 && p.desk_scale < 1.2, "pops back in: {} {}", p.desk_alpha, p.desk_scale);
+        step(&mut pet, &skin, 0.6, FrameInput::default());
+        let p = pet.pose();
+        assert_eq!((p.desk_shift, p.desk_rot, p.desk_scale, p.desk_alpha), (0.0, 0.0, 1.0, 1.0));
     }
 
     #[test]
