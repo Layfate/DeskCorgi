@@ -11,7 +11,10 @@ use crate::skin::BUILTIN_CORGI;
 pub const SIZE_SCALES: [f32; 5] = [0.55, 0.7, 0.85, 1.0, 1.2];
 pub const SIZE_NAMES: [&str; 5] = ["Tiny", "Small", "Medium", "Large", "Huge"];
 pub const DEFAULT_SIZE: usize = 2;
-pub const SLEEP_AFTER_SECS: f64 = 300.0;
+/// Idle minutes before the dog naps, picked from the menu.
+pub const NAP_MINUTES: [u32; 4] = [1, 2, 5, 10];
+pub const DEFAULT_NAP_MINUTES: u32 = 2;
+pub const SLEEP_AFTER_SECS: f64 = DEFAULT_NAP_MINUTES as f64 * 60.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EyeColor {
@@ -196,6 +199,8 @@ pub struct Settings {
     pub chase: bool,
     pub zoomies: bool,
     pub sleep: bool,
+    /// Idle minutes before a nap (one of [`NAP_MINUTES`]).
+    pub nap_minutes: u32,
     /// Yawns now and then while idle.
     pub yawn: bool,
     /// Puzzled head tilt at a few quick Backspaces.
@@ -225,6 +230,7 @@ impl Default for Settings {
             chase: true,
             zoomies: true,
             sleep: true,
+            nap_minutes: DEFAULT_NAP_MINUTES,
             yawn: true,
             huh: true,
             frame_rate: FrameRate::Smooth,
@@ -251,6 +257,7 @@ struct RawSettings {
     chase: Option<bool>,
     zoomies: Option<bool>,
     sleep: Option<bool>,
+    nap_minutes: Option<i64>,
     yawn: Option<bool>,
     huh: Option<bool>,
     frame_rate: Option<String>,
@@ -269,6 +276,12 @@ fn valid_skin_id(s: &str) -> bool {
 }
 
 impl Settings {
+    /// Idle seconds before the dog naps.
+    pub fn sleep_after(&self) -> f64 {
+        let m = if NAP_MINUTES.contains(&self.nap_minutes) { self.nap_minutes } else { DEFAULT_NAP_MINUTES };
+        m as f64 * 60.0
+    }
+
     pub fn scale(&self) -> f32 {
         SIZE_SCALES[self.size.min(SIZE_SCALES.len() - 1)]
     }
@@ -289,6 +302,11 @@ impl Settings {
             chase: r.chase.unwrap_or(d.chase),
             zoomies: r.zoomies.unwrap_or(d.zoomies),
             sleep: r.sleep.unwrap_or(d.sleep),
+            nap_minutes: r
+                .nap_minutes
+                .and_then(|m| u32::try_from(m).ok())
+                .filter(|m| NAP_MINUTES.contains(m))
+                .unwrap_or(d.nap_minutes),
             yawn: r.yawn.unwrap_or(d.yawn),
             huh: r.huh.unwrap_or(d.huh),
             frame_rate: r.frame_rate.as_deref().and_then(FrameRate::parse).unwrap_or(d.frame_rate),
@@ -312,6 +330,7 @@ impl Settings {
         s += &format!("eye_color = \"{}\"\n", self.eye_color.name());
         s += &format!("keyboard = \"{}\"\n", self.keyboard.name());
         s += &format!("frame_rate = \"{}\"\n", self.frame_rate.name());
+        s += &format!("nap_minutes = {}\n", self.nap_minutes);
         for (k, v) in [
             ("key_glow", self.key_glow),
             ("show_keys", self.show_keys),
@@ -392,6 +411,7 @@ mod tests {
             key_glow: true,
             show_keys: false,
             frame_rate: FrameRate::Saver,
+            nap_minutes: 10,
             stream_mode: true,
             window_pos: Some((-1200, 340)),
             ..Settings::default()
@@ -408,6 +428,10 @@ mod tests {
         assert_eq!(s.eye_color, EyeColor::Brown);
         assert!(!s.chase);
         assert_eq!(s.window_pos, None);
+        let s = Settings::from_toml("nap_minutes = 7\n");
+        assert_eq!(s.nap_minutes, DEFAULT_NAP_MINUTES);
+        assert_eq!(s.sleep_after(), 120.0);
+        assert_eq!(Settings::from_toml("nap_minutes = 1\n").sleep_after(), 60.0);
         assert_eq!(Settings::from_toml("this is [not toml"), Settings::default());
         assert_eq!(Settings::from_toml("size = \"big\""), Settings::default());
     }

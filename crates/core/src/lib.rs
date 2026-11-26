@@ -33,5 +33,5 @@ pub use state::{Mood, MoodConfig};
 
 /// Mood settings derived from the user's settings.
 pub fn mood_config(s: &Settings) -> MoodConfig {
-    MoodConfig { chase: s.chase, zoomies: s.zoomies, sleep: s.sleep, sleep_after: config::SLEEP_AFTER_SECS, yawn: s.yawn, huh: s.huh }
+    MoodConfig { chase: s.chase, zoomies: s.zoomies, sleep: s.sleep, sleep_after: s.sleep_after(), yawn: s.yawn, huh: s.huh }
 }

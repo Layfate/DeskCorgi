@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::time::Instant;
 
-use deskcorgi_core::config::{self, EyeColor, FrameRate, KeyboardTheme, Settings, SIZE_NAMES, SIZE_SCALES};
+use deskcorgi_core::config::{self, EyeColor, FrameRate, KeyboardTheme, Settings, NAP_MINUTES, SIZE_NAMES, SIZE_SCALES};
 use deskcorgi_core::geom::{pt, Pt};
 use deskcorgi_core::keymap::{KeyId, KEY_COUNT};
 use deskcorgi_core::render::{pixel_size, render_icon};
@@ -68,6 +68,7 @@ const ID_COUNT_KEYS: u32 = 403;
 const ID_YAWN: u32 = 404;
 const ID_HUH: u32 = 405;
 const ID_FRAME_RATE: u32 = 410;
+const ID_NAP: u32 = 420;
 const ID_CLICK_THROUGH: u32 = 500;
 const ID_LOCK: u32 = 501;
 const ID_TOP: u32 = 502;
@@ -701,9 +702,16 @@ impl App {
             let fun = CreatePopupMenu();
             add(fun, ID_CHASE, "Chase a shaking cursor", s.chase);
             add(fun, ID_ZOOMIES, "Zoomies on click spam", s.zoomies);
-            add(fun, ID_SLEEP, "Nap after 5 idle minutes", s.sleep);
             add(fun, ID_YAWN, "Yawn when idle", s.yawn);
             add(fun, ID_HUH, "Tilt head at Backspace spam", s.huh);
+            let nap = CreatePopupMenu();
+            for (i, m) in NAP_MINUTES.iter().enumerate() {
+                let label = if *m == 1 { "After 1 idle minute".to_string() } else { format!("After {m} idle minutes") };
+                add(nap, ID_NAP + i as u32, &label, s.sleep && s.nap_minutes == *m);
+            }
+            sep(nap);
+            add(nap, ID_SLEEP, "Never", !s.sleep);
+            sub(fun, nap, "Nap");
             sub(menu, fun, "Behaviour");
 
             let fps = CreatePopupMenu();
@@ -779,7 +787,15 @@ impl App {
             ID_SHOW_KEYS => self.toggle(|s| &mut s.show_keys),
             ID_CHASE => self.toggle(|s| &mut s.chase),
             ID_ZOOMIES => self.toggle(|s| &mut s.zoomies),
-            ID_SLEEP => self.toggle(|s| &mut s.sleep),
+            ID_SLEEP => {
+                self.settings.sleep = false;
+                self.mark_dirty();
+            }
+            _ if in_range(ID_NAP, NAP_MINUTES.len()) => {
+                self.settings.sleep = true;
+                self.settings.nap_minutes = NAP_MINUTES[(id - ID_NAP) as usize];
+                self.mark_dirty();
+            }
             ID_YAWN => self.toggle(|s| &mut s.yawn),
             ID_HUH => self.toggle(|s| &mut s.huh),
             _ if in_range(ID_FRAME_RATE, FrameRate::ALL.len()) => {
