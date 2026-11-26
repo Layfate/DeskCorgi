@@ -5,11 +5,11 @@
 **A tiny desktop corgi that sits behind its own little keyboard and mirrors everything you type and click.**
 
 <p>
-  <a href="https://github.com/Layfate/DeskCorgi/releases/latest"><img src="https://img.shields.io/github/v/release/Layfate/DeskCorgi?style=flat&label=Release&color=1f6feb" alt="Release"></a>
-  <a href="https://github.com/Layfate/DeskCorgi/releases"><img src="https://img.shields.io/github/downloads/Layfate/DeskCorgi/total?style=flat&label=Downloads&color=2ea44f" alt="Downloads"></a>
-  <a href="https://github.com/Layfate/DeskCorgi/stargazers"><img src="https://img.shields.io/github/stars/Layfate/DeskCorgi?style=flat&label=Stars&color=e3b341" alt="Stars"></a>
-  <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-555555?style=flat" alt="Platform">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Layfate/DeskCorgi?style=flat&label=License&color=8957e5" alt="License"></a>
+  <a href="https://github.com/Layfate/DeskCorgi/releases/latest"><img src="https://img.shields.io/github/v/release/Layfate/DeskCorgi?style=for-the-badge&label=Release&color=1f6feb" alt="Release"></a>
+  <a href="https://github.com/Layfate/DeskCorgi/releases"><img src="https://img.shields.io/github/downloads/Layfate/DeskCorgi/total?style=for-the-badge&label=Downloads&color=2ea44f" alt="Downloads"></a>
+  <a href="https://github.com/Layfate/DeskCorgi/stargazers"><img src="https://img.shields.io/github/stars/Layfate/DeskCorgi?style=for-the-badge&label=Stars&color=e3b341" alt="Stars"></a>
+  <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-555555?style=for-the-badge" alt="Platform">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Layfate/DeskCorgi?style=for-the-badge&label=License&color=8957e5" alt="License"></a>
 </p>
 
 <p>
@@ -39,14 +39,10 @@
 
 ### The corgi
 
-<img src="assets/preview_corgi.png" width="240">
-
 Red and white, big ears, a stub tail, and short legs with fluffy white socks and toe-bean paws.
 
 It comes in five coats, picked from **Dog** in the menu: **Corgi** (red), **Tricolor**,
 **Blue Merle** (with blue eyes), **Fawn** and **Sable**.
-
-<img src="assets/variants.png" width="720" alt="Red, tricolor, blue merle, fawn and sable corgis">
 
 ### Keyboard and mouse mirroring
 
@@ -54,10 +50,6 @@ It comes in five coats, picked from **Dog** in the menu: **Corgi** (red), **Tric
 - Each key you press can pop up as a small keycap with its label. This can be turned off.
 - One paw follows your mouse, and its buttons light up when you click.
 - Three keyboard themes, **Cream**, **Charcoal** and **Sakura**, plus an optional rainbow key sweep.
-
-| Cream | Charcoal | Sakura |
-| :---: | :---: | :---: |
-| <img src="assets/kb_cream.png" width="240"> | <img src="assets/kb_charcoal.png" width="240"> | <img src="assets/kb_sakura.png" width="240"> |
 
 ### Reactions
 
